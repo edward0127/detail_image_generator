@@ -1,0 +1,26 @@
+<main class="page narrow">
+  <header class="page-header">
+    <div>
+      <h1>New Image Project</h1>
+      <p>Create a JSON-backed generation project.</p>
+    </div>
+    <%= link_to "Back", image_projects_path, class: "button" %>
+  </header>
+
+  <section class="panel">
+    <%= form_with model: @image_project, class: "stack" do |form| %>
+      <% if @image_project.errors.any? %>
+        <div class="flash alert"><%= @image_project.errors.full_messages.to_sentence %></div>
+      <% end %>
+
+      <label>
+        <span>Project name</span>
+        <%= form.text_field :name, required: true %>
+      </label>
+
+      <div>
+        <%= form.submit "Create Project", class: "button primary" %>
+      </div>
+    <% end %>
+  </section>
+</main>

@@ -1,0 +1,43 @@
+<main class="page">
+  <header class="page-header">
+    <div>
+      <h1>Image Projects</h1>
+      <p>JSON-driven product detail image generation.</p>
+    </div>
+    <%= link_to "New Project", new_image_project_path, class: "button primary" %>
+  </header>
+
+  <section class="panel">
+    <% if @image_projects.any? %>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Tasks</th>
+            <th>Updated</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @image_projects.each do |project| %>
+            <tr>
+              <td><%= link_to project.name, project %></td>
+              <td><span class="status"><%= project.status %></span></td>
+              <td><%= project.tasks.size %></td>
+              <td><%= l(project.updated_at, format: :short) %></td>
+              <td class="table-actions">
+                <%= button_to "Delete", image_project_path(project), method: :delete, class: "button tiny danger", form: { data: { turbo_confirm: "Delete this project and all uploaded/generated files? This cannot be undone." } } %>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    <% else %>
+      <div class="empty-state">
+        <p>No projects yet.</p>
+        <%= link_to "Create the first project", new_image_project_path, class: "button primary" %>
+      </div>
+    <% end %>
+  </section>
+</main>

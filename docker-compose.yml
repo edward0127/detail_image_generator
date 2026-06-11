@@ -1,0 +1,19 @@
+services:
+  web:
+    image: ghcr.io/edward0127/detail_image_generator:latest
+    container_name: detail_image_generator
+    restart: unless-stopped
+    security_opt:
+      - seccomp=unconfined
+    ports:
+      - "127.0.0.1:3015:80"
+    env_file:
+      - .env.prod
+    volumes:
+      - detail_image_generator_data:/data
+      - detail_image_generator_storage:/rails/storage
+    shm_size: "1gb"
+
+volumes:
+  detail_image_generator_data:
+  detail_image_generator_storage:

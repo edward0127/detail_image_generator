@@ -1,0 +1,624 @@
+<% selected_task_name = @selected_task_name.presence || "Task #{@selected_task_index + 1}" %>
+<% final_width = @task.dig("output", "width").presence || @task.dig("canvas", "width") || 1650 %>
+<% final_height = @task.dig("output", "height").presence || @task.dig("canvas", "height") || 2480 %>
+<% selected_layout_mode = @task["layoutMode"].presence || @config["layoutMode"].presence || "strict" %>
+
+<main class="page">
+  <header class="page-header compact">
+    <div>
+      <h1><%= @image_project.name %></h1>
+      <p>Status: <span class="status"><%= @image_project.status %></span></p>
+    </div>
+    <%= link_to "All Projects", image_projects_path, class: "button" %>
+  </header>
+
+  <% if notice.present? %>
+    <div class="flash notice"><%= notice %></div>
+  <% end %>
+  <% if alert.present? %>
+    <div class="flash alert"><%= alert %></div>
+  <% end %>
+
+  <section class="workflow-panel" aria-label="Generation workflow">
+    <div class="workflow-step">
+      <div>
+        <span class="step-label">Step 1</span>
+        <h2>Import Excel</h2>
+        <p>Import an Excel instruction file to create image tasks automatically.</p>
+      </div>
+      <%= form_with url: import_excel_image_project_path(@image_project, task_index: @selected_task_index), method: :post, multipart: true, class: "workflow-form", data: { upload_reminder: true, upload_kind: "excel", upload_pending_label: "Import Excel Now" } do |form| %>
+        <%= form.file_field :excel_file, accept: ".xlsx,.xls" %>
+        <%= form.submit "Import Excel", class: "button primary" %>
+        <p class="upload-reminder-message" hidden data-upload-reminder-message>File selected but not uploaded yet.</p>
+      <% end %>
+    </div>
+
+    <div class="workflow-step">
+      <div>
+        <span class="step-label">Step 2</span>
+        <h2>Upload Images</h2>
+        <p>Upload all source images referenced by the Excel file.</p>
+      </div>
+      <%= form_with url: upload_images_image_project_path(@image_project, task_index: @selected_task_index), method: :post, multipart: true, class: "workflow-form", data: { upload_reminder: true, upload_kind: "images", upload_action: "Upload", upload_singular: "Image", upload_plural: "Images" } do |form| %>
+        <%= form.file_field :images, multiple: true, include_hidden: false, accept: ".png,.jpg,.jpeg,.webp" %>
+        <%= form.submit "Upload Images", class: "button" %>
+        <p class="upload-reminder-message" hidden data-upload-reminder-message>File selected but not uploaded yet.</p>
+      <% end %>
+    </div>
+
+    <div class="workflow-step">
+      <div>
+        <span class="step-label">Step 3</span>
+        <h2>Upload Fonts</h2>
+        <p>Upload any fonts referenced by the Excel file.</p>
+      </div>
+      <%= form_with url: upload_fonts_image_project_path(@image_project, task_index: @selected_task_index), method: :post, multipart: true, class: "workflow-form", data: { upload_reminder: true, upload_kind: "fonts", upload_action: "Upload", upload_singular: "Font", upload_plural: "Fonts" } do |form| %>
+        <%= form.file_field :fonts, multiple: true, include_hidden: false, accept: ".ttf,.otf,.ttc" %>
+        <%= form.submit "Upload Fonts", class: "button" %>
+        <p class="upload-reminder-message" hidden data-upload-reminder-message>File selected but not uploaded yet.</p>
+      <% end %>
+    </div>
+
+    <div class="workflow-step generate-step">
+      <div>
+        <span class="step-label">Step 5</span>
+        <h2>Preview / Generate / Download</h2>
+        <p>Preview or generate the currently selected image task.</p>
+      </div>
+      <div class="selected-task-banner">
+        <span>Selected Image: <strong><%= selected_task_name %></strong></span>
+      </div>
+      <div class="workflow-actions">
+        <%= button_to "Preview #{selected_task_name}", preview_image_project_path(@image_project, task_index: @selected_task_index), method: :post, class: "button" %>
+        <%= button_to "Generate #{selected_task_name}", generate_current_image_project_path(@image_project, task_index: @selected_task_index), method: :post, class: "button primary" %>
+        <%= button_to "Generate All Images", generate_image_project_path(@image_project, task_index: @selected_task_index), method: :post, class: "button primary" %>
+        <% if @latest_job&.zip_file&.attached? %>
+          <%= link_to "Download ZIP", download_zip_image_project_path(@image_project, task_index: @selected_task_index), class: "button success" %>
+        <% else %>
+          <span class="button disabled">Download ZIP</span>
+        <% end %>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel readiness-panel" aria-label="Import summary and readiness checklist">
+    <div class="readiness-column">
+      <h2>Import Summary</h2>
+      <p>Imported <%= pluralize(@readiness_summary[:tasks].size, "task") %>:</p>
+      <ul class="check-list">
+        <% @readiness_summary[:tasks].each do |task_name| %>
+          <li><span class="readiness-icon ok" aria-hidden="true">&#10003;</span><%= task_name %></li>
+        <% end %>
+      </ul>
+    </div>
+
+    <div class="readiness-column">
+      <h2>Required Images</h2>
+      <% if @readiness_summary[:images].any? %>
+        <ul class="check-list">
+          <% @readiness_summary[:images].each do |item| %>
+            <li class="readiness-<%= item[:status] %>">
+              <span class="readiness-icon <%= item[:status] == "matched" ? "ok" : "missing" %>" aria-hidden="true"><%= item[:status] == "matched" ? "&#10003;".html_safe : "&#10007;".html_safe %></span>
+              <%= item[:message] %>
+            </li>
+          <% end %>
+        </ul>
+      <% else %>
+        <p class="empty-note">No image references found in the selected tasks.</p>
+      <% end %>
+    </div>
+
+    <div class="readiness-column">
+      <h2>Required Fonts</h2>
+      <% if @readiness_summary[:fonts].any? %>
+        <ul class="check-list">
+          <% @readiness_summary[:fonts].each do |item| %>
+            <li class="readiness-<%= item[:status] %>">
+              <span class="readiness-icon <%= item[:status] == "matched" ? "ok" : "warning" %>" aria-hidden="true"><%= item[:status] == "matched" ? "&#10003;".html_safe : "&#9888;".html_safe %></span>
+              <%= item[:message] %>
+            </li>
+          <% end %>
+        </ul>
+        <% if @readiness_summary[:fonts].any? { |item| item[:status] == "warning" } %>
+          <div class="hint-box">
+            <strong>Why does my output look different?</strong>
+            <ul>
+              <li>upload the correct font files</li>
+              <li>check Excel Match Name</li>
+              <li>preview is scaled</li>
+              <li>design-friendly mode may adjust visual layout</li>
+            </ul>
+          </div>
+        <% end %>
+      <% else %>
+        <p class="empty-note">No font references found in the selected tasks.</p>
+      <% end %>
+    </div>
+  </section>
+
+  <div class="workspace">
+    <aside class="panel task-panel">
+      <div class="panel-heading">
+        <div>
+          <span class="step-label">Step 4</span>
+          <h2>Select Image Task</h2>
+        </div>
+        <%= button_to "Add", add_task_image_project_path(@image_project), method: :post, class: "button small" %>
+      </div>
+      <p class="helper-text">Select a task below to preview or generate that image.</p>
+
+      <div class="task-list">
+        <% @tasks.each_with_index do |task, index| %>
+          <% status = @task_statuses[index] || empty_task_status(task) %>
+          <% selected = index == @selected_task_index %>
+          <div class="task-item <%= "active" if index == @selected_task_index %> status-<%= status[:status] %>">
+            <%= link_to image_project_path(@image_project, task_index: index), class: "task-select-card", aria: (selected ? { current: "page" } : {}) do %>
+              <div class="task-main-row">
+                <span class="task-title"><%= status[:target_name] %></span>
+                <span class="selection-badge <%= "selected" if selected %>"><%= selected ? "Selected" : "Select" %></span>
+              </div>
+              <div class="task-subtext">
+                <%= pluralize(status[:layer_count], "layer") %>
+                <% if status[:warnings].any? %>
+                  &middot; <%= pluralize(status[:warnings].size, "warning") %>
+                <% end %>
+                <% if status[:errors].any? %>
+                  &middot; <%= pluralize(status[:errors].size, "error") %>
+                <% end %>
+                &middot; <span class="status-text status-<%= status[:status] %>"><%= status[:label] %></span>
+              </div>
+            <% end %>
+            <div class="task-actions">
+              <%= button_to "Up", move_task_image_project_path(@image_project, task_index: index, direction: "up"), method: :post, class: "button tiny" %>
+              <%= button_to "Down", move_task_image_project_path(@image_project, task_index: index, direction: "down"), method: :post, class: "button tiny" %>
+              <%= button_to "Duplicate", duplicate_task_image_project_path(@image_project, task_index: index), method: :post, class: "button tiny" %>
+              <%= button_to "Delete", delete_task_image_project_path(@image_project, task_index: index), method: :post, class: "button tiny danger" %>
+            </div>
+          </div>
+        <% end %>
+      </div>
+    </aside>
+
+    <main class="main-stack">
+      <section class="panel preview-panel main-preview">
+        <div class="panel-heading">
+          <h2>Preview for <%= selected_task_name %></h2>
+          <span class="status-badge status-<%= @selected_task_status[:status] %>"><%= @selected_task_status[:label] %></span>
+        </div>
+        <p class="current-task-name">Selected Image: <strong><%= selected_task_name %></strong></p>
+        <p class="preview-scale-note">Preview is scaled for browser display. Final output size: <strong><%= final_width %> x <%= final_height %></strong>. Download ZIP contains the full-size generated image.</p>
+        <div class="preview-stage">
+          <% if @preview_matches_selected_task %>
+            <p class="preview-owner">Scaled preview for <%= @image_project.preview_task_name %></p>
+            <%= image_tag @image_project.preview_file, class: "preview-image" %>
+          <% else %>
+            <div class="preview-empty">
+              <p class="empty-note">No preview generated for <%= selected_task_name %> yet.</p>
+              <p class="empty-note">Click Preview <%= selected_task_name %> to generate one.</p>
+              <% if @image_project.preview_file.attached? && @image_project.preview_task_name.present? %>
+                <p class="muted">Last preview belongs to <%= @image_project.preview_task_name %>.</p>
+              <% end %>
+            </div>
+          <% end %>
+        </div>
+      </section>
+
+    <section class="panel editor-panel">
+      <%= form_with model: @image_project, method: :patch, class: "stack" do |form| %>
+        <%= hidden_field_tag :task_index, @selected_task_index %>
+
+        <div class="form-toolbar">
+          <label class="grow">
+            <span>Project Name</span>
+            <%= form.text_field :name %>
+          </label>
+          <%= form.submit "Save Task", class: "button primary" %>
+        </div>
+
+        <div class="section-heading">
+          <h2>Selected Image Settings: <%= selected_task_name %></h2>
+          <span><%= @selected_task_index + 1 %> of <%= @tasks.size %></span>
+        </div>
+
+        <div class="form-grid">
+          <label>
+            <span>Output Image Name</span>
+            <%= text_field_tag "task[targetName]", @task["targetName"] %>
+          </label>
+          <label>
+            <span>Canvas Width</span>
+            <%= number_field_tag "task[canvas][width]", @task.dig("canvas", "width"), min: 1 %>
+          </label>
+          <label>
+            <span>Canvas Height</span>
+            <%= number_field_tag "task[canvas][height]", @task.dig("canvas", "height"), min: 1 %>
+          </label>
+          <label>
+            <span>Background Color</span>
+            <%= text_field_tag "task[canvas][backgroundColor]", @task.dig("canvas", "backgroundColor") %>
+          </label>
+          <label class="check-row">
+            <%= hidden_field_tag "task[canvas][transparent]", "0" %>
+            <%= check_box_tag "task[canvas][transparent]", "1", @task.dig("canvas", "transparent") == true %>
+            <span>Transparent Background</span>
+          </label>
+          <label>
+            <span>Output Width</span>
+            <%= number_field_tag "task[output][width]", @task.dig("output", "width"), min: 1 %>
+          </label>
+          <label>
+            <span>Output Height</span>
+            <%= number_field_tag "task[output][height]", @task.dig("output", "height"), min: 1 %>
+          </label>
+          <label>
+            <span>Output Format</span>
+            <%= select_tag "task[output][format]", options_for_select(%w[png jpg webp], @task.dig("output", "format")) %>
+          </label>
+          <label>
+            <span>Layout Mode</span>
+            <%= select_tag "task[layoutMode]", options_for_select([["Strict Excel values", "strict"], ["Design-friendly layout", "design"]], selected_layout_mode) %>
+            <small class="field-help">Design-friendly layout may enlarge visually undersized product images.</small>
+          </label>
+        </div>
+
+        <details class="editor-details layers-panel">
+          <summary>
+            <span>Fine-tune Layers</span>
+            <span class="summary-meta"><%= pluralize(@task.fetch("layers", []).size, "layer") %></span>
+          </summary>
+          <div class="details-body">
+            <div class="section-heading compact-heading">
+              <h2>Layers</h2>
+              <div class="inline-actions">
+                <%= button_tag "Add Image Layer", type: "submit", name: "editor_operation", value: "add_image_layer", class: "button small" %>
+                <%= button_tag "Add Text Layer", type: "submit", name: "editor_operation", value: "add_text_layer", class: "button small" %>
+              </div>
+            </div>
+
+            <% @task.fetch("layers", []).each_with_index do |layer, index| %>
+              <article class="layer-card">
+                <div class="layer-header">
+                  <strong><%= layer["name"].presence || "Layer #{index + 1}" %></strong>
+                  <div class="inline-actions">
+                    <%= button_tag "Up", type: "submit", name: "editor_operation", value: "move_layer:#{index}:up", class: "button tiny" %>
+                    <%= button_tag "Down", type: "submit", name: "editor_operation", value: "move_layer:#{index}:down", class: "button tiny" %>
+                    <%= button_tag "Copy", type: "submit", name: "editor_operation", value: "duplicate_layer:#{index}", class: "button tiny" %>
+                    <%= button_tag "Delete", type: "submit", name: "editor_operation", value: "delete_layer:#{index}", class: "button tiny danger" %>
+                  </div>
+                </div>
+
+                <%= hidden_field_tag "layers[#{index}][id]", layer["id"] %>
+                <div class="form-grid">
+                  <label>
+                    <span>Layer Name</span>
+                    <%= text_field_tag "layers[#{index}][name]", layer["name"] %>
+                  </label>
+                  <label>
+                    <span>Layer Type</span>
+                    <%= select_tag "layers[#{index}][type]", options_for_select(%w[image text], layer["type"]) %>
+                  </label>
+                  <label>
+                    <span>X</span>
+                    <%= text_field_tag "layers[#{index}][x]", layer["x"] %>
+                  </label>
+                  <label>
+                    <span>Y</span>
+                    <%= text_field_tag "layers[#{index}][y]", layer["y"] %>
+                  </label>
+
+                  <% if layer["type"] == "image" %>
+                    <label>
+                      <span>Source Image</span>
+                      <%= text_field_tag "layers[#{index}][imageName]", layer["imageName"] %>
+                    </label>
+                    <label>
+                      <span>Width</span>
+                      <%= number_field_tag "layers[#{index}][width]", layer["width"], min: 1 %>
+                    </label>
+                    <label>
+                      <span>Height</span>
+                      <%= number_field_tag "layers[#{index}][height]", layer["height"], min: 1 %>
+                    </label>
+                    <label>
+                      <span>Fit Mode</span>
+                      <%= select_tag "layers[#{index}][fit]", options_for_select(%w[contain cover stretch], layer["fit"]) %>
+                    </label>
+                  <% else %>
+                    <label class="span-2">
+                      <span>Text Content</span>
+                      <%= text_area_tag "layers[#{index}][text]", layer["text"], rows: 3 %>
+                    </label>
+                    <label>
+                      <span>Font</span>
+                      <%= text_field_tag "layers[#{index}][font]", layer["font"] %>
+                    </label>
+                    <label>
+                      <span>Font Size</span>
+                      <%= number_field_tag "layers[#{index}][fontSize]", layer["fontSize"], min: 1 %>
+                    </label>
+                    <label>
+                      <span>Text Color</span>
+                      <%= text_field_tag "layers[#{index}][color]", layer["color"] %>
+                    </label>
+                    <label>
+                      <span>Letter Spacing</span>
+                      <%= number_field_tag "layers[#{index}][letterSpacingRatio]", layer["letterSpacingRatio"] || 0, step: 0.01 %>
+                    </label>
+                    <label>
+                      <span>Line Height</span>
+                      <%= number_field_tag "layers[#{index}][lineHeightRatio]", layer["lineHeightRatio"] || 1.2, step: 0.05 %>
+                    </label>
+                    <label>
+                      <span>Max Width</span>
+                      <%= number_field_tag "layers[#{index}][maxWidth]", layer["maxWidth"], min: 1 %>
+                    </label>
+                    <label>
+                      <span>Alignment</span>
+                      <%= select_tag "layers[#{index}][align]", options_for_select(%w[left center right], layer["align"]) %>
+                    </label>
+                    <label class="check-row compact-check">
+                      <%= hidden_field_tag "layers[#{index}][autoWrap]", "0" %>
+                      <%= check_box_tag "layers[#{index}][autoWrap]", "1", layer["autoWrap"] == true %>
+                      <span>Auto Wrap</span>
+                    </label>
+                  <% end %>
+                </div>
+
+                <details class="layer-advanced">
+                  <summary>Advanced layer options</summary>
+                  <div class="form-grid">
+                    <label>
+                      <span>Opacity</span>
+                      <%= number_field_tag "layers[#{index}][opacity]", layer["opacity"] || 1, min: 0, max: 1, step: 0.01 %>
+                    </label>
+                    <% if layer["type"] == "text" %>
+                      <label class="check-row compact-check">
+                        <%= hidden_field_tag "layers[#{index}][bold]", "0" %>
+                        <%= check_box_tag "layers[#{index}][bold]", "1", layer["bold"] == true %>
+                        <span>Bold</span>
+                      </label>
+                      <label class="check-row compact-check">
+                        <%= hidden_field_tag "layers[#{index}][italic]", "0" %>
+                        <%= check_box_tag "layers[#{index}][italic]", "1", layer["italic"] == true %>
+                        <span>Italic</span>
+                      </label>
+                      <label>
+                        <span>Letter Spacing Mode</span>
+                        <%= select_tag "layers[#{index}][letterSpacingMode]", options_for_select([["Ratio", ""], ["Spread to target width", "spread"]], layer["letterSpacingMode"].to_s) %>
+                      </label>
+                      <label>
+                        <span>Target Text Width Ratio</span>
+                        <%= number_field_tag "layers[#{index}][targetTextWidthRatio]", layer["targetTextWidthRatio"] || 0.78, min: 0.5, max: 0.95, step: 0.01 %>
+                      </label>
+                      <label class="span-2">
+                        <span>Notes</span>
+                        <%= text_area_tag "layers[#{index}][notes]", layer["notes"], rows: 2 %>
+                      </label>
+                    <% end %>
+                  </div>
+                </details>
+              </article>
+            <% end %>
+          </div>
+        </details>
+      <% end %>
+    </section>
+    </main>
+
+    <aside class="side-stack">
+      <section class="panel">
+        <h2>Warnings / Errors for <%= selected_task_name %></h2>
+        <% if @selected_task_status[:errors].any? || @selected_task_status[:warnings].any? %>
+          <div class="message-list">
+            <% @selected_task_status[:errors].each do |message| %>
+              <p class="error-text"><%= message %></p>
+            <% end %>
+            <% @selected_task_status[:warnings].each do |message| %>
+              <p class="warning-text"><%= message %></p>
+            <% end %>
+          </div>
+        <% else %>
+          <p class="empty-note">No current warnings or errors.</p>
+        <% end %>
+      </section>
+
+      <section class="panel">
+        <h2>Image Assets</h2>
+        <div class="asset-list">
+          <% @image_project.image_assets.each do |asset| %>
+            <div class="asset-row">
+              <% if asset.file.attached? %>
+                <%= image_tag asset.file, class: "asset-thumb" %>
+              <% end %>
+              <div class="asset-meta">
+                <span class="asset-label">Uploaded file</span>
+                <strong><%= asset.name %></strong>
+                <span>Dimensions: <%= [asset.width, asset.height].compact.join(" x ").presence || "unknown" %></span>
+                <%= form_with url: update_image_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :patch, class: "asset-alias-form" do %>
+                  <label>
+                    <span>Excel Match Name</span>
+                    <%= text_field_tag "image_asset[alias_name]", asset.alias_name.presence || asset.normalized_name %>
+                    <small class="field-help">If Excel says p1, this field should be p1.</small>
+                  </label>
+                  <%= submit_tag "Save", class: "button tiny" %>
+                <% end %>
+              </div>
+              <%= button_to "Delete", image_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :delete, class: "button tiny danger" %>
+            </div>
+          <% end %>
+          <% if @image_project.image_assets.empty? %>
+            <p class="empty-note">No image assets uploaded yet.</p>
+          <% end %>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Font Assets</h2>
+        <div class="asset-list">
+          <% @image_project.font_assets.each do |asset| %>
+            <div class="asset-row no-thumb">
+              <div class="asset-meta">
+                <span class="asset-label">Uploaded file</span>
+                <strong><%= asset.name %></strong>
+                <%= form_with url: update_font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :patch, class: "asset-alias-form" do %>
+                  <label>
+                    <span>Excel Match Name</span>
+                    <%= text_field_tag "font_asset[alias_name]", asset.alias_name.presence || asset.normalized_name %>
+                    <small class="field-help">If Excel lists this font, this field should match that name.</small>
+                  </label>
+                  <%= submit_tag "Save", class: "button tiny" %>
+                <% end %>
+              </div>
+              <%= button_to "Delete", font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :delete, class: "button tiny danger" %>
+            </div>
+          <% end %>
+          <% if @image_project.font_assets.empty? %>
+            <p class="empty-note">No font assets uploaded yet.</p>
+          <% end %>
+        </div>
+      </section>
+
+      <% if @latest_job %>
+        <section class="panel">
+          <h2>Latest Generation</h2>
+          <p>Status: <span class="status"><%= @latest_job.status %></span></p>
+          <div class="generated-list">
+            <% @latest_job.generated_images.each do |generated| %>
+              <div class="generated-row">
+                <strong><%= generated.target_name %>.<%= generated.format %></strong>
+                <% if generated.width.present? && generated.height.present? %>
+                  <span><%= generated.width %> x <%= generated.height %></span>
+                <% end %>
+                <% if generated.errors_list.any? %>
+                  <span class="error-text"><%= generated.errors_list.join(" | ") %></span>
+                <% elsif generated.warnings_list.any? %>
+                  <span class="warning-text"><%= generated.warnings_list.join(" | ") %></span>
+                <% end %>
+              </div>
+            <% end %>
+          </div>
+        </section>
+      <% end %>
+
+      <details class="panel advanced-panel">
+        <summary>Advanced JSON</summary>
+        <%= form_with model: @image_project, method: :patch, class: "stack advanced-json-form" do |form| %>
+          <%= hidden_field_tag :task_index, @selected_task_index %>
+          <%= form.text_field :name %>
+          <%= text_area_tag :config_json_text, @image_project.config_json, rows: 18, class: "json-box" %>
+          <%= form.submit "Save Raw JSON", class: "button" %>
+        <% end %>
+      </details>
+
+      <section class="panel danger-zone">
+        <h2>Danger Zone</h2>
+        <p>Delete this project and all uploaded/generated files. This cannot be undone.</p>
+        <%= button_to "Delete Project", image_project_path(@image_project), method: :delete, class: "button danger", form: { data: { turbo_confirm: "Delete this project and all uploaded/generated files? This cannot be undone." } } %>
+      </section>
+    </aside>
+  </div>
+</main>
+
+<script>
+  (function() {
+    function submitControlFor(form) {
+      return form.querySelector('input[type="submit"], button[type="submit"]');
+    }
+
+    function labelFor(control) {
+      if (control.matches('input')) {
+        return control.value;
+      }
+
+      return control.textContent;
+    }
+
+    function setLabel(control, label) {
+      if (control.matches('input')) {
+        control.value = label;
+      } else {
+        control.textContent = label;
+      }
+    }
+
+    function selectedFileCount(input) {
+      if (!input) {
+        return 0;
+      }
+
+      if (input.files) {
+        return input.files.length;
+      }
+
+      return input.value ? 1 : 0;
+    }
+
+    function pendingLabelFor(form, count) {
+      if (form.dataset.uploadPendingLabel) {
+        return form.dataset.uploadPendingLabel;
+      }
+
+      var noun = count === 1 ? form.dataset.uploadSingular : form.dataset.uploadPlural;
+      return [form.dataset.uploadAction || "Upload", count, noun, "Now"].filter(Boolean).join(" ");
+    }
+
+    function updateReminder(form) {
+      var input = form.querySelector('input[type="file"]');
+      var submitControl = submitControlFor(form);
+      var message = form.querySelector('[data-upload-reminder-message]');
+
+      if (!input || !submitControl || !message) {
+        return;
+      }
+
+      if (!submitControl.dataset.defaultLabel) {
+        submitControl.dataset.defaultLabel = labelFor(submitControl);
+      }
+
+      var count = selectedFileCount(input);
+      var hasPendingFiles = count > 0;
+
+      form.classList.toggle("upload-pending", hasPendingFiles);
+      message.hidden = !hasPendingFiles;
+      message.setAttribute("aria-live", "polite");
+
+      if (!message.id) {
+        message.id = "upload-reminder-" + (form.dataset.uploadKind || "file");
+      }
+
+      if (hasPendingFiles) {
+        setLabel(submitControl, pendingLabelFor(form, count));
+        submitControl.setAttribute("aria-describedby", message.id);
+      } else {
+        setLabel(submitControl, submitControl.dataset.defaultLabel);
+        submitControl.removeAttribute("aria-describedby");
+      }
+    }
+
+    function initializeUploadReminders() {
+      document.querySelectorAll('form[data-upload-reminder]').forEach(function(form) {
+        var input = form.querySelector('input[type="file"]');
+
+        if (!input) {
+          return;
+        }
+
+        input.addEventListener("change", function() {
+          updateReminder(form);
+        });
+        form.addEventListener("reset", function() {
+          window.setTimeout(function() {
+            updateReminder(form);
+          }, 0);
+        });
+        updateReminder(form);
+      });
+    }
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", initializeUploadReminders);
+    } else {
+      initializeUploadReminders();
+    }
+  })();
+</script>
