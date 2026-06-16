@@ -19,7 +19,7 @@ class ImageProjects::AssetMatcherTest < ActiveSupport::TestCase
     result = ImageProjects::FontMatcher.new(project).match("Brand Font")
 
     assert_equal font, result.asset
-    assert result.warning.include?("matched uploaded font")
+    assert_nil result.warning
   end
 
   test "font matcher is case-insensitive" do

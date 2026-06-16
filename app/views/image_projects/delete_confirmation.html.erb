@@ -1,0 +1,71 @@
+<% content_for :title, "Delete Image Project" %>
+
+<main class="page narrow">
+  <header class="page-header compact">
+    <div>
+      <h1>Delete Image Project</h1>
+      <p>Review the project contents before permanently deleting it.</p>
+    </div>
+    <%= link_to "Cancel", @cancel_delete_path, class: "button" %>
+  </header>
+
+  <% if notice.present? %>
+    <div class="flash notice"><%= notice %></div>
+  <% end %>
+  <% if alert.present? %>
+    <div class="flash alert"><%= alert %></div>
+  <% end %>
+
+  <section class="panel delete-confirmation-panel">
+    <div class="flash alert deletion-warning">
+      <strong>This action cannot be undone.</strong>
+      <p>Deleting this project will remove its imported config, uploaded images, cached previews, generated images, and ZIP artifacts.</p>
+    </div>
+
+    <table class="data-table delete-summary-table">
+      <tbody>
+        <tr>
+          <th scope="row">Project name</th>
+          <td><%= @delete_summary[:project_name] %></td>
+        </tr>
+        <tr>
+          <th scope="row">Status</th>
+          <td><span class="status"><%= @delete_summary[:status] %></span></td>
+        </tr>
+        <tr>
+          <th scope="row">Number of tasks</th>
+          <td><%= @delete_summary[:task_count] %></td>
+        </tr>
+        <tr>
+          <th scope="row">Uploaded image assets count</th>
+          <td><%= @delete_summary[:image_asset_count] %></td>
+        </tr>
+        <tr>
+          <th scope="row">Cached task previews count</th>
+          <td><%= @delete_summary[:task_preview_count] %></td>
+        </tr>
+        <tr>
+          <th scope="row">Generated jobs / ZIP files count</th>
+          <td><%= pluralize(@delete_summary[:generation_job_count], "job") %> / <%= pluralize(@delete_summary[:zip_file_count], "ZIP file") %></td>
+        </tr>
+        <tr>
+          <th scope="row">Last updated time</th>
+          <td><%= l(@delete_summary[:last_updated_at], format: :short) %></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <%= form_with url: image_project_path(@image_project), method: :delete, class: "stack deletion-confirmation-form", data: { controller: "delete-confirmation", delete_confirmation_project_name_value: @image_project.name } do %>
+      <%= hidden_field_tag :return_to, params[:return_to] if params[:return_to].present? %>
+      <label>
+        <span>Type project name to confirm</span>
+        <%= text_field_tag :confirm_project_name, params[:confirm_project_name], autocomplete: "off", data: { delete_confirmation_target: "input", action: "input->delete-confirmation#check" } %>
+      </label>
+
+      <div class="confirmation-actions">
+        <%= link_to "Cancel", @cancel_delete_path, class: "button" %>
+        <%= submit_tag "Yes, delete this project", class: "button danger", data: { delete_confirmation_target: "submit" } %>
+      </div>
+    <% end %>
+  </section>
+</main>

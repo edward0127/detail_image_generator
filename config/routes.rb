@@ -9,6 +9,7 @@ Rails.application.routes.draw do
       post :generate_current
       post :generate
       get :download_zip
+      get :delete_confirmation
 
       post :add_task
       post :duplicate_task

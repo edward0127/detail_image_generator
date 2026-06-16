@@ -2,19 +2,26 @@ require "zip"
 
 module ImageProjects
   class GenerationRunner
-    def self.call(project, task_indexes: nil)
-      new(project, task_indexes: task_indexes).call
+    def self.call(project, task_indexes: nil, input_signature: nil, generation_scope: nil)
+      new(project, task_indexes: task_indexes, input_signature: input_signature, generation_scope: generation_scope).call
     end
 
-    def initialize(project, task_indexes: nil)
+    def initialize(project, task_indexes: nil, input_signature: nil, generation_scope: nil)
       @project = project
       @renderer = Renderer.new(project)
       @task_indexes = task_indexes
+      @generation_scope = generation_scope.presence || default_generation_scope
+      @input_signature = input_signature.presence || default_input_signature
     end
 
     def call
-      purge_previous_generation_jobs!
-      job = project.image_generation_jobs.create!(status: "running", started_at: Time.current)
+      job = project.image_generation_jobs.create!(
+        status: "running",
+        started_at: Time.current,
+        generation_scope: generation_scope,
+        input_signature: input_signature,
+        task_indexes_json: task_indexes_json
+      )
       project.update!(status: "generating", last_error: nil)
       job_warnings = []
       job_errors = []
@@ -37,6 +44,7 @@ module ImageProjects
         errors_list: job_errors
       )
       project.update!(status: status, last_error: job_errors.presence&.to_json)
+      cleanup_old_all_tasks_zip_jobs!(job)
       job
     rescue StandardError => error
       job&.update!(
@@ -50,16 +58,22 @@ module ImageProjects
 
     private
 
-    attr_reader :project, :renderer, :task_indexes
+    attr_reader :project, :renderer, :task_indexes, :input_signature, :generation_scope
 
-    def purge_previous_generation_jobs!
-      project.image_generation_jobs.includes(:zip_file_attachment, generated_images: { file_attachment: :blob }).find_each do |job|
-        job.generated_images.each do |generated|
-          generated.file.purge if generated.file.attached?
-        end
-        job.zip_file.purge if job.zip_file.attached?
-        job.destroy!
-      end
+    def default_generation_scope
+      task_indexes.nil? ? ImageGenerationJob::ALL_TASKS_ZIP_SCOPE : ImageGenerationJob::SELECTED_TASKS_ZIP_SCOPE
+    end
+
+    def default_input_signature
+      return unless task_indexes.nil?
+
+      RenderInputSignature.full_zip(project)
+    end
+
+    def task_indexes_json
+      return if task_indexes.nil?
+
+      JSON.generate(Array(task_indexes).map(&:to_i))
     end
 
     def selected_task_pairs
@@ -120,6 +134,24 @@ module ImageProjects
           )
         end
       end
+    end
+
+    def cleanup_old_all_tasks_zip_jobs!(current_job)
+      return unless current_job.generation_scope == ImageGenerationJob::ALL_TASKS_ZIP_SCOPE
+      return unless current_job.zip_file.attached?
+
+      project.image_generation_jobs
+        .where.not(id: current_job.id)
+        .where("generation_scope = ? OR generation_scope IS NULL", ImageGenerationJob::ALL_TASKS_ZIP_SCOPE)
+        .find_each { |job| purge_generation_job!(job) }
+    end
+
+    def purge_generation_job!(job)
+      job.generated_images.includes(file_attachment: :blob).each do |generated|
+        generated.file.purge if generated.file.attached?
+      end
+      job.zip_file.purge if job.zip_file.attached?
+      job.destroy!
     end
 
     def unique_name(name, used_names)

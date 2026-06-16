@@ -87,7 +87,7 @@ class ImageProjects::RendererHtmlTest < ActiveSupport::TestCase
 
     refute_includes html, %(font-family: "global_font_#{font.id}")
     assert_includes html, "font-family: Arial, &quot;Microsoft YaHei&quot;"
-    assert warnings.any? { |warning| warning.include?("Font \"FilelessBrand.ttf\" was not uploaded.") }
+    assert warnings.any? { |warning| warning.include?("has no attached file") }
   end
 
   test "normal text layer renders inline bold span" do

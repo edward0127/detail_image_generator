@@ -241,11 +241,12 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
     assert_select ".task-title", text: "P1"
     assert_select ".task-title", text: "P2"
     assert_includes response.body, "Danger Zone"
-    assert_includes response.body, "Delete this project and all uploaded/generated files? This cannot be undone."
+    assert_includes response.body, "Delete this project and all uploaded/generated files. This cannot be undone."
     assert_select "details.advanced-panel summary", text: "Advanced JSON"
     assert_select "details.advanced-panel[open]", count: 0
     assert_select "details.layers-panel summary", text: /Fine-tune Layers/
     assert_select "details.layers-panel[open]", count: 0
+    assert_select ".danger-zone a[href='#{delete_confirmation_image_project_path(project, return_to: image_project_path(project, task_index: 0))}']", text: "Delete Project"
   end
 
   test "blank project disables preview and download actions with helper text" do
@@ -526,7 +527,7 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
     get image_project_path(project)
 
     assert_response :success
-    assert_includes response.body, "Font &quot;FilelessBrand.ttf&quot; was not uploaded."
+    assert_includes response.body, "Font &#39;FilelessBrand.ttf&#39; matched &#39;FilelessBrand.ttf&#39;, but that font record has no attached file. A fallback font was used."
     refute_includes response.body, "FilelessBrand.ttf matched to FilelessBrand.ttf"
     assert_select "details#font-library-manager[open]"
   end
@@ -694,14 +695,62 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_includes response.body, project.name
-    assert_includes response.body, "Delete this project and all uploaded/generated files? This cannot be undone."
+    assert_select "a[href='#{delete_confirmation_image_project_path(project, return_to: image_projects_path)}']", text: "Delete"
   end
 
-  test "delete project route removes the project" do
+  test "delete confirmation page displays project summary" do
+    project = project_with_delete_summary_data
+
+    get delete_confirmation_image_project_path(project, return_to: image_projects_path)
+
+    assert_response :success
+    assert_includes response.body, "This action cannot be undone."
+    assert_select "table.delete-summary-table" do
+      assert_select "th", text: "Project name"
+      assert_select "td", text: project.name
+      assert_select "th", text: "Status"
+      assert_select "td", text: project.status
+      assert_select "th", text: "Number of tasks"
+      assert_select "td", text: "2"
+      assert_select "th", text: "Uploaded image assets count"
+      assert_select "td", text: "1"
+      assert_select "th", text: "Cached task previews count"
+      assert_select "td", text: "1"
+      assert_select "th", text: "Generated jobs / ZIP files count"
+      assert_select "td", text: "2 jobs / 1 ZIP file"
+      assert_select "th", text: "Last updated time"
+      assert_select "td", text: I18n.l(project.updated_at, format: :short)
+    end
+    assert_select "input[name='confirm_project_name']"
+    assert_select "input[type='submit'][value='Yes, delete this project']"
+    assert_select "a[href='#{image_projects_path}']", text: "Cancel"
+  end
+
+  test "delete project route rejects missing and wrong confirmation name" do
+    project = create_project
+
+    assert_no_difference -> { ImageProject.count } do
+      delete image_project_path(project)
+    end
+
+    assert_response :unprocessable_entity
+    assert_includes response.body, "Type the project name exactly to confirm deletion."
+    assert ImageProject.exists?(project.id)
+
+    assert_no_difference -> { ImageProject.count } do
+      delete image_project_path(project), params: { confirm_project_name: "Wrong Project" }
+    end
+
+    assert_response :unprocessable_entity
+    assert_includes response.body, "Type the project name exactly to confirm deletion."
+    assert ImageProject.exists?(project.id)
+  end
+
+  test "delete project route removes project with matching confirmation name" do
     project = create_project
 
     assert_difference -> { ImageProject.count }, -1 do
-      delete image_project_path(project)
+      delete image_project_path(project), params: { confirm_project_name: project.name }
     end
 
     assert_redirected_to image_projects_path
@@ -814,6 +863,32 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
 
   def create_project
     ImageProject.create!(name: "Uploads")
+  end
+
+  def project_with_delete_summary_data
+    create_project.tap do |project|
+      project.update_config!(
+        "projectName" => "Uploads",
+        "tasks" => [
+          task_config("P1"),
+          task_config("P2")
+        ]
+      )
+      attach_image_asset(project, "p1.png", alias_name: "p1")
+      task_preview = project.task_previews.create!(
+        task_index: 0,
+        task_name: "P1",
+        input_signature: "signature",
+        width: 1,
+        height: 1,
+        format: "png"
+      )
+      task_preview.file.attach(io: StringIO.new("preview"), filename: "preview.png", content_type: "image/png")
+      zipped_job = project.image_generation_jobs.create!(status: "completed")
+      zipped_job.zip_file.attach(io: StringIO.new("zip-bytes"), filename: "generated.zip", content_type: "application/zip")
+      project.image_generation_jobs.create!(status: "failed")
+      project.reload
+    end
   end
 
   def create_global_font_asset(name, match_name: nil)

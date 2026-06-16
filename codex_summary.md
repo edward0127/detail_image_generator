@@ -1,37 +1,38 @@
-Implemented both parts.
+Implemented the double-confirmation delete flow.
 
-**Files Changed**
-- [inline_text_parser.rb](C:/Users/edward/projects/detail_image_generator/app/services/image_projects/inline_text_parser.rb)
-- [renderer.rb](C:/Users/edward/projects/detail_image_generator/app/services/image_projects/renderer.rb)
-- [excel_parsers.rb](C:/Users/edward/projects/detail_image_generator/app/services/image_projects/excel_parsers.rb)
-- [image_projects_controller.rb](C:/Users/edward/projects/detail_image_generator/app/controllers/image_projects_controller.rb)
-- [show.html.erb](C:/Users/edward/projects/detail_image_generator/app/views/image_projects/show.html.erb)
-- [application.css](C:/Users/edward/projects/detail_image_generator/app/assets/stylesheets/application.css)
-- Related parser, renderer, importer, controller, and system tests.
+**Changed Files**
+- [config/routes.rb](C:/Users/edward/projects/detail_image_generator/config/routes.rb:12)
+- [image_projects_controller.rb](C:/Users/edward/projects/detail_image_generator/app/controllers/image_projects_controller.rb:27)
+- [delete_confirmation.html.erb](C:/Users/edward/projects/detail_image_generator/app/views/image_projects/delete_confirmation.html.erb:1)
+- [index.html.erb](C:/Users/edward/projects/detail_image_generator/app/views/image_projects/index.html.erb:30)
+- [show.html.erb](C:/Users/edward/projects/detail_image_generator/app/views/image_projects/show.html.erb:534)
+- [delete_confirmation_controller.js](C:/Users/edward/projects/detail_image_generator/app/javascript/controllers/delete_confirmation_controller.js:3)
+- [application.css](C:/Users/edward/projects/detail_image_generator/app/assets/stylesheets/application.css:1003)
+- [image_projects_controller_upload_test.rb](C:/Users/edward/projects/detail_image_generator/test/controllers/image_projects_controller_upload_test.rb:701)
+- [project_deletion_confirmation_test.rb](C:/Users/edward/projects/detail_image_generator/test/system/project_deletion_confirmation_test.rb:4)
 
-**Behavior**
-- `**bold**` and `*italic*` are now supported in the existing `layer["text"]` field.
-- `**DESIGN** HIGHLIGHTS` renders in one text layer with only `DESIGN` bold.
-- User HTML is escaped, not rendered.
-- Whole-layer Bold and Italic still work.
-- Centered short titles with inline styles still use the deterministic `.tracked-grapheme` path; markup characters are stripped from layout measurement and `aria-label`.
-- Excel notes like `其中 DESIGN 这个单词加粗` now convert text to `**DESIGN** HIGHLIGHTS` without setting whole-layer bold.
-- Editor save, preview autosave, and ZIP autosave preserve inline markup.
-- Blank/invalid projects now disable Preview and Download with helper text.
-- Server-side guards reject preview/download/generate actions for empty projects or missing required source images.
+**What Changed**
+- Added `GET /image_projects/:id/delete_confirmation`.
+- Index and show-page Danger Zone delete actions now open the confirmation page instead of sending `DELETE`.
+- Confirmation page shows the requested deletion summary table and warning.
+- Final delete requires typing the exact project name.
+- `DELETE /image_projects/:id` is server-side protected and rejects missing/wrong confirmation names.
+- Deletion still goes through `ImageProjects::ProjectDestroyer`.
 
-**Validation**
-Passed:
-- `bundle exec rails test test/services/image_projects/inline_text_parser_test.rb`
-- `bundle exec rails test test/services/image_projects/renderer_html_test.rb`
-- `bundle exec rails test test/services/image_projects/renderer_and_generation_test.rb`
-- `bundle exec rails test test/services/image_projects/excel_importer_test.rb`
-- `bundle exec rails test test/controllers/image_projects_controller_upload_test.rb`
-- `bundle exec rails test test/controllers/image_projects_controller_task_selection_test.rb`
-- `bundle exec rails test test/system/layer_editor_conditional_sections_test.rb`
-- `bundle exec rails test` → `136 runs, 929 assertions, 0 failures, 0 errors`
-- `bundle exec rails zeitwerk:check` → `All is good!`
+**Tests Added/Updated**
+- Added system test for index Delete -> confirmation -> Cancel keeps project.
+- Updated controller tests for summary display, missing/wrong confirmation rejection, and valid confirmed deletion.
+- Existing destroyer cleanup tests still pass.
 
-No JavaScript toolbar was added, so Node checks were not applicable. No migration was added.
+**Commands Run**
+- `bundle exec rails test test/controllers/image_projects_controller_upload_test.rb` passed: 36 runs, 391 assertions.
+- `bundle exec rails test test/system/project_deletion_confirmation_test.rb` passed: 1 run, 9 assertions.
+- `bundle exec rails test test/services/image_projects/project_destroyer_test.rb` passed: 2 runs, 23 assertions.
+- `bundle exec rails test` passed: 152 runs, 1050 assertions.
+- `bundle exec rails zeitwerk:check` passed.
+- `Get-ChildItem -Path app\javascript -Filter *.js -Recurse | ForEach-Object { node --check $_.FullName }` passed.
+- `git diff --check` passed, with only existing CRLF normalization warnings.
 
-Remaining limitation: the inline parser intentionally supports only simple paired `**...**`, `*...*`, and `***...***`; malformed or unmatched markers render literally.
+**Limitations**
+- Test runs emit existing VIPS warnings about optional image modules missing, but all tests passed.
+- I did not change Docker/Nginx/deployment and did not leave a Rails server running. Capybara briefly started Puma for the system test only.

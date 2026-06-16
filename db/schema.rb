@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_06_16_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_06_16_010000) do
   create_table "active_storage_attachments", force: :cascade do |t|
     t.bigint "blob_id", null: false
     t.datetime "created_at", null: false
@@ -92,11 +92,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_16_000000) do
     t.datetime "created_at", null: false
     t.text "error_messages", default: "[]", null: false
     t.datetime "finished_at"
+    t.string "generation_scope"
     t.integer "image_project_id", null: false
+    t.string "input_signature"
     t.datetime "started_at"
     t.string "status", default: "pending", null: false
+    t.text "task_indexes_json"
     t.datetime "updated_at", null: false
     t.text "warnings", default: "[]", null: false
+    t.index ["image_project_id", "generation_scope", "created_at"], name: "idx_generation_jobs_project_scope_created"
+    t.index ["image_project_id", "generation_scope", "input_signature"], name: "idx_generation_jobs_project_scope_signature"
     t.index ["image_project_id"], name: "index_image_generation_jobs_on_image_project_id"
   end
 
@@ -111,10 +116,27 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_16_000000) do
     t.datetime "updated_at", null: false
   end
 
+  create_table "task_previews", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "format"
+    t.integer "height"
+    t.integer "image_project_id", null: false
+    t.string "input_signature", null: false
+    t.integer "task_index", null: false
+    t.string "task_name", null: false
+    t.datetime "updated_at", null: false
+    t.integer "width"
+    t.index ["image_project_id", "task_index", "input_signature"], name: "idx_task_previews_project_task_signature", unique: true
+    t.index ["image_project_id", "task_index"], name: "index_task_previews_on_image_project_id_and_task_index"
+    t.index ["image_project_id"], name: "index_task_previews_on_image_project_id"
+    t.index ["input_signature"], name: "index_task_previews_on_input_signature"
+  end
+
   add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
   add_foreign_key "font_assets", "image_projects"
   add_foreign_key "generated_images", "image_generation_jobs"
   add_foreign_key "image_assets", "image_projects"
   add_foreign_key "image_generation_jobs", "image_projects"
+  add_foreign_key "task_previews", "image_projects"
 end

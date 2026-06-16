@@ -124,14 +124,14 @@
         <p class="preview-scale-note">Preview is scaled for browser display. Final output size: <strong><%= final_width %> x <%= final_height %></strong>. Download ZIP contains full-size generated images for all tasks.</p>
         <div class="preview-stage">
           <% if @preview_matches_selected_task %>
-            <p class="preview-owner">Scaled preview for <%= @image_project.preview_task_name %></p>
-            <%= image_tag @image_project.preview_file, class: "preview-image" %>
+            <p class="preview-owner">Scaled preview for <%= @selected_task_preview.task_name %></p>
+            <%= image_tag @selected_task_preview.file, class: "preview-image" %>
           <% else %>
             <div class="preview-empty">
-              <p class="empty-note">No preview generated for <%= selected_task_name %> yet.</p>
+              <p class="empty-note">No up-to-date preview generated for <%= selected_task_name %> yet.</p>
               <p class="empty-note">Click Preview Selected Image to generate one.</p>
-              <% if @image_project.preview_file.attached? && @image_project.preview_task_name.present? %>
-                <p class="muted">Last preview belongs to <%= @image_project.preview_task_name %>.</p>
+              <% if @stale_task_preview.present? %>
+                <p class="muted">An older preview for <%= @stale_task_preview.task_name %> is outdated.</p>
               <% end %>
             </div>
           <% end %>
@@ -531,7 +531,7 @@
       <section class="panel danger-zone">
         <h2>Danger Zone</h2>
         <p>Delete this project and all uploaded/generated files. This cannot be undone.</p>
-        <%= button_to "Delete Project", image_project_path(@image_project), method: :delete, class: "button danger", form: { data: { turbo_confirm: "Delete this project and all uploaded/generated files? This cannot be undone." } } %>
+        <%= link_to "Delete Project", delete_confirmation_image_project_path(@image_project, return_to: image_project_path(@image_project, task_index: @selected_task_index)), class: "button danger" %>
       </section>
     </aside>
   </div>
@@ -601,7 +601,7 @@
 
     function preserveSubmitterValue(form, control) {
       if (!control || !control.name) {
-        return;
+        return null;
       }
 
       var hidden = document.createElement("input");
@@ -610,6 +610,7 @@
       hidden.value = control.value;
       hidden.dataset.submitterValue = "true";
       form.appendChild(hidden);
+      return hidden;
     }
 
     function setProcessingState(form, control) {
@@ -620,11 +621,130 @@
       if (!control.dataset.defaultLabel) {
         control.dataset.defaultLabel = labelFor(control);
       }
+      control.dataset.wasDisabled = control.disabled ? "true" : "false";
 
       setLabel(control, control.dataset.processingLabel || defaultProcessingLabel(control, form));
       control.classList.add("is-processing");
       control.setAttribute("aria-busy", "true");
       control.disabled = true;
+    }
+
+    function resetProcessingState(form, control, hidden) {
+      if (hidden && hidden.parentNode) {
+        hidden.parentNode.removeChild(hidden);
+      }
+
+      if (control) {
+        if (control.dataset.defaultLabel) {
+          setLabel(control, control.dataset.defaultLabel);
+        }
+        control.classList.remove("is-processing");
+        control.removeAttribute("aria-busy");
+        control.disabled = control.dataset.wasDisabled === "true";
+        delete control.dataset.wasDisabled;
+      }
+
+      if (form) {
+        delete form.dataset.submitting;
+      }
+    }
+
+    function downloadFetchSupported() {
+      return window.fetch && window.FormData && window.Blob && window.URL && window.URL.createObjectURL;
+    }
+
+    function csrfToken() {
+      var token = document.querySelector('meta[name="csrf-token"]');
+      return token ? token.content : "";
+    }
+
+    function isDownloadZipSubmit(form, control) {
+      return form &&
+        form.id === "task-editor-form" &&
+        control &&
+        control.name === "after_save_action" &&
+        control.value === "download_zip";
+    }
+
+    function filenameFromDisposition(disposition) {
+      var utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+      if (utf8Match) {
+        try {
+          return decodeURIComponent(utf8Match[1].replace(/"/g, ""));
+        } catch (error) {
+          return utf8Match[1].replace(/"/g, "");
+        }
+      }
+
+      var filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+      return filenameMatch ? filenameMatch[1] : null;
+    }
+
+    function triggerBlobDownload(blob, filename) {
+      var url = window.URL.createObjectURL(blob);
+      var link = document.createElement("a");
+      link.href = url;
+      link.download = filename || "generated-images.zip";
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      window.setTimeout(function() {
+        window.URL.revokeObjectURL(url);
+        if (link.parentNode) {
+          link.parentNode.removeChild(link);
+        }
+      }, 0);
+    }
+
+    function navigateToHtmlResponse(response) {
+      if (response.redirected && response.url) {
+        window.location.assign(response.url);
+        return Promise.resolve();
+      }
+
+      return response.text().then(function(html) {
+        var contentType = response.headers.get("Content-Type") || "";
+        if (contentType.indexOf("text/html") !== -1 && html) {
+          document.open();
+          document.write(html);
+          document.close();
+        } else if (response.url) {
+          window.location.assign(response.url);
+        } else {
+          window.location.reload();
+        }
+      });
+    }
+
+    function submitDownloadZipWithFetch(form, control, hidden) {
+      var formData = new FormData(form);
+      var method = (form.getAttribute("method") || "get").toUpperCase();
+
+      return fetch(form.action, {
+        method: method,
+        body: formData,
+        credentials: "same-origin",
+        headers: {
+          "Accept": "application/zip, text/html;q=0.9, */*;q=0.8",
+          "X-CSRF-Token": csrfToken()
+        }
+      }).then(function(response) {
+        var contentType = response.headers.get("Content-Type") || "";
+        if (response.ok && contentType.indexOf("application/zip") !== -1) {
+          return response.blob().then(function(blob) {
+            triggerBlobDownload(
+              blob,
+              filenameFromDisposition(response.headers.get("Content-Disposition") || "")
+            );
+          });
+        }
+
+        return navigateToHtmlResponse(response);
+      }).catch(function(error) {
+        console.error("Download ZIP request failed", error);
+      }).finally(function() {
+        resetProcessingState(form, control, hidden);
+      });
     }
 
     function initializeProcessingState() {
@@ -638,8 +758,19 @@
         }
 
         form.dataset.submitting = "true";
-        preserveSubmitterValue(form, submitter);
+        var hidden = preserveSubmitterValue(form, submitter);
         setProcessingState(form, submitter);
+
+        if (isDownloadZipSubmit(form, submitter)) {
+          if (downloadFetchSupported()) {
+            event.preventDefault();
+            submitDownloadZipWithFetch(form, submitter, hidden);
+          } else {
+            window.setTimeout(function() {
+              resetProcessingState(form, submitter, hidden);
+            }, 30000);
+          }
+        }
       });
     }
 

@@ -20,6 +20,10 @@ module ImageProjects
     def purge_project_attachments
       project.preview_file.purge if project.preview_file.attached?
 
+      project.task_previews.includes(file_attachment: :blob).find_each do |preview|
+        preview.file.purge if preview.file.attached?
+      end
+
       project.image_assets.includes(file_attachment: :blob).find_each do |asset|
         asset.file.purge if asset.file.attached?
       end

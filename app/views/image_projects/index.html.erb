@@ -27,7 +27,7 @@
               <td><%= project.tasks.size %></td>
               <td><%= l(project.updated_at, format: :short) %></td>
               <td class="table-actions">
-                <%= button_to "Delete", image_project_path(project), method: :delete, class: "button tiny danger", form: { data: { turbo_confirm: "Delete this project and all uploaded/generated files? This cannot be undone." } } %>
+                <%= link_to "Delete", delete_confirmation_image_project_path(project, return_to: image_projects_path), class: "button tiny danger" %>
               </td>
             </tr>
           <% end %>

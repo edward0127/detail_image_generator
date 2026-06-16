@@ -1,4 +1,8 @@
 class ImageGenerationJob < ApplicationRecord
+  ALL_TASKS_ZIP_SCOPE = "all_tasks_zip"
+  SELECTED_TASKS_ZIP_SCOPE = "selected_tasks_zip"
+  COMPLETED_CACHE_STATUSES = %w[completed completed_with_errors].freeze
+
   belongs_to :image_project
   has_many :generated_images, dependent: :destroy
   has_one_attached :zip_file

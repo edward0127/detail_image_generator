@@ -78,6 +78,39 @@ class UploadButtonHighlightTest < ApplicationSystemTestCase
     assert_selector "details#font-library-manager[open]"
   end
 
+  test "download zip button resets after successful blob download" do
+    project = text_layer_project(font: "")
+
+    visit image_project_path(project)
+    install_successful_download_fetch_stub
+
+    click_button "Download ZIP (All Images)"
+
+    assert_button "Download ZIP (All Images)", disabled: false
+    assert_equal "download_zip", page.evaluate_script("window.__downloadZipFetchCalls[0].action")
+    assert_equal "test.zip", page.evaluate_script("window.__downloadZipAnchor.download")
+    assert_equal "application/zip", page.evaluate_script("window.__downloadZipDownloads[0].type")
+    assert_no_selector "button.is-processing"
+  end
+
+  test "download zip html error response is shown to the user" do
+    project = text_layer_project(font: "")
+
+    visit image_project_path(project)
+    page.execute_script(<<~JS)
+      window.fetch = function() {
+        return Promise.resolve(new Response(
+          "<!doctype html><html><body><div class='flash alert'>ZIP failed in test</div></body></html>",
+          { status: 422, headers: { "Content-Type": "text/html" } }
+        ));
+      };
+    JS
+
+    click_button "Download ZIP (All Images)"
+
+    assert_text "ZIP failed in test"
+  end
+
   private
 
   def text_layer_project(font:)
@@ -134,5 +167,40 @@ class UploadButtonHighlightTest < ApplicationSystemTestCase
       assert_button button_text
       assert_text "File selected but not uploaded yet."
     end
+  end
+
+  def install_successful_download_fetch_stub
+    page.execute_script(<<~JS)
+      window.__downloadZipFetchCalls = [];
+      window.__downloadZipDownloads = [];
+      window.fetch = function(url, options) {
+        window.__downloadZipFetchCalls.push({
+          url: url,
+          method: options.method,
+          action: options.body.get("after_save_action"),
+          csrf: options.headers["X-CSRF-Token"]
+        });
+        return Promise.resolve(new Response(
+          new Blob(["zip-bytes"], { type: "application/zip" }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/zip",
+              "Content-Disposition": "attachment; filename=\\"test.zip\\""
+            }
+          }
+        ));
+      };
+      window.URL.createObjectURL = function(blob) {
+        window.__downloadZipDownloads.push({ type: blob.type, size: blob.size });
+        return "blob:test-download";
+      };
+      window.URL.revokeObjectURL = function(url) {
+        window.__downloadZipRevokedUrl = url;
+      };
+      HTMLAnchorElement.prototype.click = function() {
+        window.__downloadZipAnchor = { href: this.href, download: this.download };
+      };
+    JS
   end
 end

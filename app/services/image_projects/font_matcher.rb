@@ -16,7 +16,7 @@ module ImageProjects
 
     def match(font_name)
       query = font_name.to_s.strip
-      return fallback_result("No font specified; using browser fallback font.") if query.blank?
+      return fallback_result(nil) if query.blank?
 
       project_match = match_assets(project_assets, query)
       return project_match if project_match
@@ -32,15 +32,11 @@ module ImageProjects
     attr_reader :project
 
     def project_assets
-      @project_assets ||= usable_assets(project.font_assets.to_a)
+      @project_assets ||= project.font_assets.to_a
     end
 
     def global_assets
-      @global_assets ||= usable_assets(GlobalFontAsset.all.to_a)
-    end
-
-    def usable_assets(assets)
-      assets.select { |asset| asset.respond_to?(:file) && asset.file.attached? }
+      @global_assets ||= GlobalFontAsset.all.to_a
     end
 
     def match_assets(assets, query)
@@ -50,10 +46,10 @@ module ImageProjects
       extensionless = matching_assets(assets) do |asset|
         extensionless_names_for(asset).include?(AssetNameNormalizer.extensionless(query))
       end
-      return result_from_candidates(query, extensionless) if extensionless.any?
+      return result_from_candidates(query, extensionless, exact: true) if extensionless.any?
 
       alias_match = matching_assets(assets) { |asset| AssetNameNormalizer.full(match_name_for(asset)) == AssetNameNormalizer.full(query) }
-      return result_from_candidates(query, alias_match) if alias_match.any?
+      return result_from_candidates(query, alias_match, exact: true) if alias_match.any?
 
       loose_query = AssetNameNormalizer.loose(query)
       loose = matching_assets(assets) { |asset| loose_names_for(asset).include?(loose_query) }
@@ -67,17 +63,24 @@ module ImageProjects
     end
 
     def result_from_candidates(query, candidates, exact: false, loose: false)
-      selected = candidates.min_by { |asset| match_distance(query, asset.name) }
+      selected = preferred_candidates(candidates).min_by { |asset| match_distance(query, asset.name) }
       warnings = []
       warnings << "Multiple fonts matched '#{query}'; using '#{selected.name}'." if candidates.size > 1
       warnings << "Font '#{query}' matched loosely to '#{selected.name}'." if loose
-      warnings << "Font '#{query}' matched uploaded font '#{selected.name}'." if !exact && !loose && AssetNameNormalizer.full(query) != AssetNameNormalizer.full(selected.name)
+      unless selected.file.attached?
+        warnings << "Font '#{query}' matched '#{selected.name}', but that font record has no attached file. A fallback font was used."
+      end
 
-      MatchResult.new(asset: selected, warning: warnings.presence&.join(" "))
+      MatchResult.new(asset: selected, warning: warnings.presence&.join(" "), fallback: !selected.file.attached?)
     end
 
     def fallback_result(warning)
       MatchResult.new(warning: warning, fallback: true)
+    end
+
+    def preferred_candidates(candidates)
+      attached = candidates.select { |asset| asset.file.attached? }
+      attached.presence || candidates
     end
 
     def loose_names_for(asset)

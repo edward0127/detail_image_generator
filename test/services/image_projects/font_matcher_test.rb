@@ -20,7 +20,8 @@ class ImageProjects::FontMatcherTest < ActiveSupport::TestCase
     result = ImageProjects::FontMatcher.new(project).match("GenWanMinTW-Light")
 
     assert_equal font, result.asset
-    assert result.warning.include?("matched uploaded font")
+    assert_nil result.warning
+    refute result.fallback?
   end
 
   test "matches global font by Excel match name" do
@@ -30,6 +31,19 @@ class ImageProjects::FontMatcherTest < ActiveSupport::TestCase
     result = ImageProjects::FontMatcher.new(project).match("ExcelBrandFont")
 
     assert_equal font, result.asset
+    assert_nil result.warning
+    refute result.fallback?
+  end
+
+  test "matches global font by case insensitive exact filename without warning" do
+    project = ImageProject.create!(name: "Matcher")
+    font = create_global_font_asset("BrandFont.TTF")
+
+    result = ImageProjects::FontMatcher.new(project).match("brandfont.ttf")
+
+    assert_equal font, result.asset
+    assert_nil result.warning
+    refute result.fallback?
   end
 
   test "matches global font with loose normalized name" do
@@ -75,23 +89,35 @@ class ImageProjects::FontMatcherTest < ActiveSupport::TestCase
     assert missing.warning.include?("Font \"Missing.ttf\" was not uploaded.")
   end
 
-  test "ignores matching global font records without attached files" do
+  test "warns when multiple global fonts can match" do
     project = ImageProject.create!(name: "Matcher")
-    GlobalFontAsset.create!(
+    first = create_global_font_asset("Brand.ttf")
+    create_global_font_asset("brand.otf")
+
+    result = ImageProjects::FontMatcher.new(project).match("Brand")
+
+    assert_equal first, result.asset
+    assert result.warning.include?("Multiple fonts matched")
+    refute result.fallback?
+  end
+
+  test "matching global font records without attached files warn and fall back" do
+    project = ImageProject.create!(name: "Matcher")
+    asset = GlobalFontAsset.create!(
       name: "FilelessBrand.ttf",
       normalized_name: ImageProjects::AssetNameNormalizer.extensionless("FilelessBrand.ttf")
     )
 
     result = ImageProjects::FontMatcher.new(project).match("FilelessBrand.ttf")
 
+    assert_equal asset, result.asset
     assert result.fallback?
-    assert_nil result.asset
-    assert result.warning.include?("Font \"FilelessBrand.ttf\" was not uploaded.")
+    assert result.warning.include?("has no attached file")
   end
 
-  test "ignores matching project font records without attached files" do
+  test "matching project font records without attached files warn and fall back" do
     project = ImageProject.create!(name: "Matcher")
-    project.font_assets.create!(
+    asset = project.font_assets.create!(
       name: "FilelessProject.ttf",
       alias_name: "FilelessProject",
       normalized_name: ImageProjects::AssetNameNormalizer.extensionless("FilelessProject.ttf")
@@ -99,9 +125,9 @@ class ImageProjects::FontMatcherTest < ActiveSupport::TestCase
 
     result = ImageProjects::FontMatcher.new(project).match("FilelessProject.ttf")
 
+    assert_equal asset, result.asset
     assert result.fallback?
-    assert_nil result.asset
-    assert result.warning.include?("Font \"FilelessProject.ttf\" was not uploaded.")
+    assert result.warning.include?("has no attached file")
   end
 
   private

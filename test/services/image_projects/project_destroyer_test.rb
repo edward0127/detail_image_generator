@@ -8,13 +8,22 @@ class ImageProjects::ProjectDestroyerTest < ActiveSupport::TestCase
   test "destroyer removes project records and purges uploaded and generated files" do
     project = ImageProject.create!(name: "Destroy Me")
     preview_blob = attach(project.preview_file, "preview.png", "image/png", Base64.decode64(PNG_1X1))
+    task_preview = project.task_previews.create!(
+      task_index: 0,
+      task_name: "P1",
+      input_signature: "signature",
+      width: 1,
+      height: 1,
+      format: "png"
+    )
+    task_preview_blob = attach(task_preview.file, "task-preview.png", "image/png", Base64.decode64(PNG_1X1))
     image_asset = image_asset_with_file(project, "p1.png")
     font_asset = font_asset_with_file(project, "Brand.ttf")
     job = project.image_generation_jobs.create!(status: "completed")
     generated = job.generated_images.create!(target_name: "P1", format: "png", width: 1, height: 1)
     generated_blob = attach(generated.file, "P1.png", "image/png", Base64.decode64(PNG_1X1))
     zip_blob = attach(job.zip_file, "generated.zip", "application/zip", "zip-bytes")
-    blobs = [ preview_blob, image_asset.file.blob, font_asset.file.blob, generated_blob, zip_blob ]
+    blobs = [ preview_blob, task_preview_blob, image_asset.file.blob, font_asset.file.blob, generated_blob, zip_blob ]
 
     assert blobs.all? { |blob| blob.service.exist?(blob.key) }
 
@@ -23,6 +32,7 @@ class ImageProjects::ProjectDestroyerTest < ActiveSupport::TestCase
     refute ImageProject.exists?(project.id)
     refute ImageAsset.exists?(image_asset.id)
     refute FontAsset.exists?(font_asset.id)
+    refute TaskPreview.exists?(task_preview.id)
     refute ImageGenerationJob.exists?(job.id)
     refute GeneratedImage.exists?(generated.id)
     blobs.each do |blob|

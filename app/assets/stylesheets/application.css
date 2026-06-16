@@ -1000,6 +1000,36 @@ input[type="submit"]:disabled {
   gap: 12px;
 }
 
+.delete-confirmation-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.deletion-warning {
+  margin-bottom: 0;
+}
+
+.deletion-warning p {
+  margin-top: 6px;
+}
+
+.delete-summary-table th {
+  width: 260px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.deletion-confirmation-form {
+  max-width: 520px;
+}
+
+.confirmation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
 .json-box {
   font-family: Consolas, Monaco, monospace;
   font-size: 12px;

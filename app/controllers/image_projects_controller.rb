@@ -24,13 +24,27 @@ class ImageProjectsController < ApplicationController
     load_editor_state
   end
 
+  def delete_confirmation
+    @delete_summary = project_delete_summary
+    @cancel_delete_path = delete_cancel_path
+  end
+
   def destroy
+    unless delete_confirmation_matches?
+      @delete_summary = project_delete_summary
+      @cancel_delete_path = delete_cancel_path
+      flash.now[:alert] = "Type the project name exactly to confirm deletion."
+      render :delete_confirmation, status: :unprocessable_entity
+      return
+    end
+
     project_name = @image_project.name
     ImageProjects::ProjectDestroyer.call(@image_project)
 
     redirect_to image_projects_path, notice: "Project \"#{project_name}\" deleted."
   rescue StandardError => error
-    redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: "Project delete failed: #{error.message}"
+    destination = @image_project.persisted? ? delete_confirmation_image_project_path(@image_project) : image_projects_path
+    redirect_to destination, alert: "Project delete failed: #{error.message}"
   end
 
   def update
@@ -119,9 +133,9 @@ class ImageProjectsController < ApplicationController
     @image_project.reload
     index = selected_task_index
     ensure_task_previewable!(index)
-    result = render_preview_for_task!(index)
+    result = preview_current_task!(index)
     redirect_to image_project_path(@image_project, task_index: index),
-                notice: preview_notice(result, "Preview generated.")
+                notice: result[:notice]
   rescue StandardError => error
     redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: "Preview failed: #{error.message}"
   end
@@ -149,7 +163,7 @@ class ImageProjectsController < ApplicationController
     save_request_config_if_present!
     @image_project.reload
     ensure_project_downloadable!
-    job = generate_all_images!
+    job, = zip_job_for_current_inputs!
 
     send_zip_file(job)
   rescue StandardError => error
@@ -327,6 +341,44 @@ class ImageProjectsController < ApplicationController
     image_project_path(@image_project, task_index: selected_task_index, anchor: "font-library")
   end
 
+  def delete_confirmation_matches?
+    params[:confirm_project_name].to_s == @image_project.name.to_s
+  end
+
+  def delete_cancel_path
+    path = params[:return_to].to_s
+    return path if local_path?(path)
+
+    image_project_path(@image_project)
+  end
+
+  def local_path?(path)
+    path.start_with?("/") && !path.start_with?("//")
+  end
+
+  def project_delete_summary
+    {
+      project_name: @image_project.name,
+      status: @image_project.status,
+      task_count: @image_project.tasks.size,
+      image_asset_count: @image_project.image_assets.count,
+      task_preview_count: @image_project.task_previews.count,
+      generation_job_count: @image_project.image_generation_jobs.count,
+      zip_file_count: project_zip_file_count,
+      last_updated_at: @image_project.updated_at
+    }
+  end
+
+  def project_zip_file_count
+    ActiveStorage::Attachment
+      .where(
+        record_type: "ImageGenerationJob",
+        record_id: @image_project.image_generation_jobs.select(:id),
+        name: "zip_file"
+      )
+      .count
+  end
+
   def load_editor_state
     @config = @image_project.config_hash
     @tasks = @config.fetch("tasks", [])
@@ -338,7 +390,10 @@ class ImageProjectsController < ApplicationController
     @task_statuses = task_statuses_for(@tasks, @latest_job)
     @selected_task_status = @task_statuses[@selected_task_index] || empty_task_status(@task)
     @selected_task_name = @selected_task_status[:target_name]
-    @preview_matches_selected_task = preview_belongs_to_task?(@selected_task_index, @selected_task_name)
+    @selected_task_preview_signature = preview_signature_for_task(@selected_task_index)
+    @selected_task_preview = current_task_preview_for(@selected_task_index, @selected_task_name, @selected_task_preview_signature)
+    @stale_task_preview = stale_task_preview_for(@selected_task_index, @selected_task_preview)
+    @preview_matches_selected_task = @selected_task_preview.present?
     @readiness_summary = readiness_summary_for(@tasks)
     @selected_task_preview_readiness = task_preview_readiness(@task)
     @selected_task_previewable = @selected_task_preview_readiness[:ready]
@@ -351,13 +406,16 @@ class ImageProjectsController < ApplicationController
     when "preview_current"
       index = selected_task_index
       ensure_task_previewable!(index)
-      result = render_preview_for_task!(index)
-      redirect_to image_project_path(@image_project, task_index: index),
-                  notice: preview_notice(result, "Configuration saved. Preview generated.")
+      result = preview_current_task!(
+        index,
+        generated_message: "Configuration saved. Preview generated.",
+        cached_message: "Configuration saved. Preview is already up to date."
+      )
+      redirect_to image_project_path(@image_project, task_index: index), notice: result[:notice]
     when "download_zip"
       ensure_project_downloadable!
-      job = generate_all_images!
-      flash[:notice] = "Configuration saved. ZIP generated."
+      job, cached = zip_job_for_current_inputs!
+      flash[:notice] = cached ? "Configuration saved. Reused cached ZIP." : "Configuration saved. ZIP generated."
       send_zip_file(job)
     when "generate_current"
       index = selected_task_index
@@ -394,29 +452,53 @@ class ImageProjectsController < ApplicationController
     task = @image_project.tasks[index]
     raise "No task exists at index #{index}." if task.blank?
 
+    input_signature = preview_signature_for_task(index)
     result = ImageProjects::Renderer.new(@image_project).render_preview(task, scale: 0.5)
-    attach_preview_result!(result, task, index)
+    attach_preview_result!(result, task, index, input_signature)
     result
   end
 
-  def attach_preview_result!(result, task, index)
+  def preview_current_task!(index, generated_message: "Preview generated.", cached_message: "Preview is already up to date.")
+    cached_preview = current_task_preview_for(index)
+    return { notice: cached_message, cached: true } if cached_preview
+
+    result = render_preview_for_task!(index)
+    { notice: preview_notice(result, generated_message), cached: false, result: result }
+  end
+
+  def attach_preview_result!(result, task, index, input_signature)
     return unless result.path.present? && File.exist?(result.path)
 
     begin
       File.open(result.path, "rb") do |file|
-        @image_project.preview_file.purge if @image_project.preview_file.attached?
-        @image_project.preview_file.attach(
+        preview = @image_project.task_previews.find_or_initialize_by(
+          task_index: index,
+          input_signature: input_signature
+        )
+        preview.assign_attributes(
+          task_name: task_display_name(task, index),
+          width: result.width,
+          height: result.height,
+          format: result.format
+        )
+        preview.save! if preview.new_record? || preview.changed?
+        preview.file.purge if preview.file.attached?
+        preview.file.attach(
           io: file,
           filename: "preview-#{result.filename}",
           content_type: mime_type(result.format)
         )
+        cleanup_stale_task_previews!(index, keep: preview)
       end
-      @image_project.update!(
-        preview_task_index: index,
-        preview_task_name: task_display_name(task, index)
-      )
     ensure
       ImageProjects::TempfileManager.delete(result.path)
+    end
+  end
+
+  def cleanup_stale_task_previews!(index, keep:)
+    @image_project.task_previews.where(task_index: index).where.not(id: keep.id).find_each do |preview|
+      preview.file.purge if preview.file.attached?
+      preview.destroy!
     end
   end
 
@@ -427,8 +509,12 @@ class ImageProjectsController < ApplicationController
     messages.join(" ")
   end
 
-  def generate_all_images!
-    ImageProjects::GenerationRunner.call(@image_project)
+  def generate_all_images!(input_signature: nil)
+    ImageProjects::GenerationRunner.call(
+      @image_project,
+      input_signature: input_signature,
+      generation_scope: ImageGenerationJob::ALL_TASKS_ZIP_SCOPE
+    )
   end
 
   def generate_current_image!(index)
@@ -436,6 +522,14 @@ class ImageProjectsController < ApplicationController
     raise "No task exists at index #{index}." if task.blank?
 
     ImageProjects::GenerationRunner.call(@image_project, task_indexes: [ index ])
+  end
+
+  def zip_job_for_current_inputs!
+    input_signature = ImageProjects::RenderInputSignature.full_zip(@image_project)
+    cached_job = @image_project.latest_completed_zip_job(input_signature: input_signature)
+    return [ cached_job, true ] if cached_job
+
+    [ generate_all_images!(input_signature: input_signature), false ]
   end
 
   def generation_notice(job)
@@ -688,7 +782,7 @@ class ImageProjectsController < ApplicationController
 
     if current_value.present?
       match = ImageProjects::FontMatcher.new(@image_project).match(current_value)
-      if match.found?
+      if match.found? && !match.fallback?
         options << [ font_option_label(match.asset), current_value ] unless current_value == match.asset.name
       else
         options << [ "Missing/current: #{current_value} (Missing)", current_value ]
@@ -947,10 +1041,10 @@ class ImageProjectsController < ApplicationController
 
   def readiness_font(name, matcher)
     match = matcher.match(name)
-    if match.found?
+    if match.found? && !match.fallback?
       { name: name, status: "matched", message: "#{name} matched to #{match.asset.name}" }
     else
-      { name: name, status: "warning", message: missing_font_message(name) }
+      { name: name, status: "warning", message: match.warning.presence || missing_font_message(name) }
     end
   end
 
@@ -1032,9 +1126,37 @@ class ImageProjectsController < ApplicationController
   end
 
   def preview_belongs_to_task?(index, task_name)
-    @image_project.preview_file.attached? &&
-      @image_project.preview_task_index == index &&
-      @image_project.preview_task_name.to_s == task_name.to_s
+    current_task_preview_for(index, task_name).present?
+  end
+
+  def preview_signature_for_task(index)
+    return nil if @image_project.tasks[index].blank?
+
+    ImageProjects::RenderInputSignature.preview_task(@image_project, index)
+  end
+
+  def current_task_preview_for(index, task_name = nil, input_signature = nil)
+    task = @image_project.tasks[index]
+    return nil if task.blank?
+
+    task_name ||= task_display_name(task, index)
+    input_signature ||= preview_signature_for_task(index)
+    return nil if input_signature.blank?
+
+    @image_project.task_previews
+      .with_attached_file
+      .where(task_index: index, task_name: task_name, input_signature: input_signature)
+      .order(created_at: :desc)
+      .detect { |preview| preview.file.attached? }
+  end
+
+  def stale_task_preview_for(index, current_preview = nil)
+    @image_project.task_previews
+      .with_attached_file
+      .where(task_index: index)
+      .where.not(id: current_preview&.id)
+      .order(created_at: :desc)
+      .detect { |preview| preview.file.attached? }
   end
 
   def layer_index
