@@ -1,50 +1,37 @@
-Done. I added production Docker Compose deployment support and did not start a Rails server.
+Implemented both parts.
 
 **Files Changed**
-`Dockerfile`, `docker-compose.yml`, `.env.prod.example`, `.gitignore`, `Gemfile.lock`, `README.md`, `config/database.yml`, `config/environments/production.rb`, `app/controllers/application_controller.rb`, `app/services/image_projects/renderer.rb`, `script/deploy.sh`, `script/deploy_production.sh`, `test/controllers/basic_auth_test.rb`.
+- [inline_text_parser.rb](C:/Users/edward/projects/detail_image_generator/app/services/image_projects/inline_text_parser.rb)
+- [renderer.rb](C:/Users/edward/projects/detail_image_generator/app/services/image_projects/renderer.rb)
+- [excel_parsers.rb](C:/Users/edward/projects/detail_image_generator/app/services/image_projects/excel_parsers.rb)
+- [image_projects_controller.rb](C:/Users/edward/projects/detail_image_generator/app/controllers/image_projects_controller.rb)
+- [show.html.erb](C:/Users/edward/projects/detail_image_generator/app/views/image_projects/show.html.erb)
+- [application.css](C:/Users/edward/projects/detail_image_generator/app/assets/stylesheets/application.css)
+- Related parser, renderer, importer, controller, and system tests.
 
-**Key Changes**
-- Docker image now installs Chromium, fontconfig, Noto CJK/emoji fonts, SQLite, jemalloc, and Debian 13’s correct libvips runtime package: `libvips42t64`.
-- Added `CHROME_BIN=/usr/bin/chromium` and `BROWSER_PATH=/usr/bin/chromium`.
-- Ferrum now includes Docker-safe browser options: `no-sandbox`, `disable-dev-shm-usage`, `disable-gpu`, `hide-scrollbars`.
-- Production SQLite now defaults to `/data/production*.sqlite3`.
-- Active Storage persists through the Compose volume mounted at `/rails/storage`.
-- Added optional env-gated Basic Auth using `ENABLE_BASIC_AUTH=true`, `BASIC_AUTH_USERNAME`, and `BASIC_AUTH_PASSWORD`.
-- Added production Compose service:
-  - image: `ghcr.io/edward0127/detail_image_generator:latest`
-  - container: `detail_image_generator`
-  - port: `127.0.0.1:3015:80`
-  - volumes: `detail_image_generator_data:/data`, `detail_image_generator_storage:/rails/storage`
-  - `shm_size: "1gb"` for Chromium.
-- Added TDK-style deploy scripts with `deploy`, `logs`, `status`, `restart`, `prepare`, `migrate`, `down`, plus `pull`, `verify`, `seed`.
-- README now documents first setup, redeploy, DNS, example Nginx proxy, SSL via Certbot, and useful server commands.
+**Behavior**
+- `**bold**` and `*italic*` are now supported in the existing `layer["text"]` field.
+- `**DESIGN** HIGHLIGHTS` renders in one text layer with only `DESIGN` bold.
+- User HTML is escaped, not rendered.
+- Whole-layer Bold and Italic still work.
+- Centered short titles with inline styles still use the deterministic `.tracked-grapheme` path; markup characters are stripped from layout measurement and `aria-label`.
+- Excel notes like `其中 DESIGN 这个单词加粗` now convert text to `**DESIGN** HIGHLIGHTS` without setting whole-layer bold.
+- Editor save, preview autosave, and ZIP autosave preserve inline markup.
+- Blank/invalid projects now disable Preview and Download with helper text.
+- Server-side guards reject preview/download/generate actions for empty projects or missing required source images.
 
-**Verification Run**
-- `bundle lock --add-platform x86_64-linux`
-- `bundle exec rails test`: passed, `72 runs, 523 assertions`
-- `bundle exec rails zeitwerk:check`: passed
-- `bash -n script/deploy.sh script/deploy_production.sh`: passed
-- Docker package verification: `ruby:3.3.10-slim` is Debian 13 trixie; corrected `libvips` to `libvips42t64`
-- `docker build -t detail_image_generator:test .`: passed
-- Container smoke test: non-root `rails` user, writable `/data` and `/rails/storage`, Chromium launches
-- Ferrum smoke test inside Docker: passed
-- `docker compose -f docker-compose.yml config`: passed with a temporary `.env.prod` copied from the example, then removed
+**Validation**
+Passed:
+- `bundle exec rails test test/services/image_projects/inline_text_parser_test.rb`
+- `bundle exec rails test test/services/image_projects/renderer_html_test.rb`
+- `bundle exec rails test test/services/image_projects/renderer_and_generation_test.rb`
+- `bundle exec rails test test/services/image_projects/excel_importer_test.rb`
+- `bundle exec rails test test/controllers/image_projects_controller_upload_test.rb`
+- `bundle exec rails test test/controllers/image_projects_controller_task_selection_test.rb`
+- `bundle exec rails test test/system/layer_editor_conditional_sections_test.rb`
+- `bundle exec rails test` → `136 runs, 929 assertions, 0 failures, 0 errors`
+- `bundle exec rails zeitwerk:check` → `All is good!`
 
-**Manual Server Steps**
-```sh
-mkdir -p /var/detail_image_generator
-git clone git@github.com:edward0127/detail_image_generator.git /var/detail_image_generator
-cd /var/detail_image_generator
-cp .env.prod.example .env.prod
-# edit .env.prod with real values
-docker login ghcr.io
-./script/deploy.sh deploy
-```
+No JavaScript toolbar was added, so Node checks were not applicable. No migration was added.
 
-Normal redeploy:
-```sh
-./script/deploy_production.sh --auto-commit "Deploy detail image generator"
-```
-
-**Remaining Limitations**
-No GHCR push, SSH deployment, live Nginx edit, or Certbot run was performed. `.env.prod` still needs real production secrets on the server.
+Remaining limitation: the inline parser intentionally supports only simple paired `**...**`, `*...*`, and `***...***`; malformed or unmatched markers render literally.

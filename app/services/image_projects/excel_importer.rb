@@ -246,7 +246,7 @@ module ImageProjects
           "letterSpacingRatio" => 0,
           "lineHeightRatio" => default_line_height_ratio(text),
           "maxWidth" => default_text_max_width(text, task),
-          "autoWrap" => true,
+          "autoWrap" => default_auto_wrap_for_text(text, cell),
           "bold" => false,
           "italic" => false,
           "x" => position["x"] || "center",
@@ -394,6 +394,35 @@ module ImageProjects
 
     def default_line_height_ratio(text)
       long_text?(text) ? 1.6 : 1.2
+    end
+
+    def default_auto_wrap_for_text(text, cell)
+      return true if text.to_s.match?(/\r|\n/)
+      return false if title_text_context?(cell) && short_single_line_text?(text)
+      return true if body_text_context?(cell)
+
+      long_text?(text)
+    end
+
+    def title_text_context?(cell)
+      text_context_for(cell).match?(/\b(title|heading|headline|subtitle|subhead)\b/i)
+    end
+
+    def body_text_context?(cell)
+      text_context_for(cell).match?(/\b(body|copy|paragraph|description|details?)\b/i)
+    end
+
+    def text_context_for(cell)
+      [
+        cell.header.label,
+        cell.header.group_label,
+        cell.header.step_label
+      ].compact_blank.join(" ")
+    end
+
+    def short_single_line_text?(text)
+      value = text.to_s
+      !value.match?(/\r|\n/) && value.gsub(/\s+/, "").length <= 40
     end
 
     def long_text?(text)

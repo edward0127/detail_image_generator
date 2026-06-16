@@ -60,6 +60,49 @@ class ImageProjects::RendererAndGenerationTest < ActiveSupport::TestCase
     end
   end
 
+  test "centered tracked title renders visually centered in final png" do
+    skip "ruby-vips is not available" unless vips_available?
+
+    project = ImageProject.create!(name: "Tracked Title Raster Project")
+    task = {
+      "targetName" => "Tracked Title Raster",
+      "canvas" => { "width" => 1650, "height" => 2480, "backgroundColor" => "#3A1612", "transparent" => false },
+      "output" => { "width" => 1650, "height" => 2480, "format" => "png" },
+      "layers" => [
+        {
+          "id" => "layer1",
+          "name" => "Title",
+          "type" => "text",
+          "text" => "\u7559\u4F4F\u6E29\u5EA6 \u5EF6\u957F\u9002\u996E",
+          "font" => "GenWanMinTW-Light.ttf",
+          "fontSize" => 80,
+          "color" => "#F4EAD7",
+          "letterSpacingRatio" => 0.65,
+          "lineHeightRatio" => 1.2,
+          "maxWidth" => 1650,
+          "autoWrap" => false,
+          "bold" => false,
+          "italic" => false,
+          "x" => "center",
+          "y" => 200,
+          "align" => "center",
+          "opacity" => 1
+        }
+      ]
+    }
+
+    result = ImageProjects::Renderer.new(project).render_final(task)
+    assert_empty result.errors
+
+    bounds = visible_title_bounds(result.path, y: 140, height: 260)
+    visible_center = (bounds[:left] + bounds[:right]) / 2.0
+    canvas_center = result.width / 2.0
+
+    assert_in_delta canvas_center, visible_center, 5.0
+  ensure
+    File.delete(result.path) if defined?(result) && result&.path.present? && File.exist?(result.path)
+  end
+
   test "missing Chinese font warns and falls back without crashing" do
     project = ImageProject.create!(name: "Missing Chinese Font Project")
     task = text_task("Chinese Font Fallback", 220, 120, text: "设计亮点", font: "不存在字体.ttf")
@@ -111,6 +154,37 @@ class ImageProjects::RendererAndGenerationTest < ActiveSupport::TestCase
 
     assert_equal "completed", job.status
     assert_equal [ "P1.png", "P2.jpg" ], zip_entries(job.zip_file.download).sort
+  end
+
+  test "batch generation keeps only the latest job and purges prior generated blobs" do
+    project = ImageProject.create!(name: "Generation Retention Project")
+    project.update_config!(
+      "projectName" => "Generation Retention Project",
+      "canvasDefaults" => { "width" => 80, "height" => 50, "backgroundColor" => "#FFFFFF", "transparent" => false, "outputFormat" => "png" },
+      "tasks" => [
+        text_task("P1", 80, 50),
+        text_task("P2", 80, 50)
+      ]
+    )
+
+    old_job = ImageProjects::GenerationRunner.call(project)
+    old_job_id = old_job.id
+    old_generated_ids = old_job.generated_images.pluck(:id)
+    old_blobs = old_job.generated_images.map { |image| image.file.blob } + [ old_job.zip_file.blob ]
+
+    new_job = ImageProjects::GenerationRunner.call(project)
+
+    assert_equal "completed", new_job.status
+    assert_equal [ new_job.id ], project.image_generation_jobs.pluck(:id)
+    refute ImageGenerationJob.exists?(old_job_id)
+    old_generated_ids.each do |generated_id|
+      refute GeneratedImage.exists?(generated_id)
+    end
+    old_blobs.each do |blob|
+      refute ActiveStorage::Blob.exists?(blob.id)
+      refute blob.service.exist?(blob.key)
+    end
+    assert_equal [ "P1.png", "P2.png" ], zip_entries(new_job.zip_file.download).sort
   end
 
   test "current task generation creates only the selected task and zip entry" do
@@ -273,5 +347,37 @@ class ImageProjects::RendererAndGenerationTest < ActiveSupport::TestCase
       entries = zip.map(&:name)
     end
     entries
+  end
+
+  def vips_available?
+    require "vips"
+    true
+  rescue LoadError
+    false
+  end
+
+  def visible_title_bounds(path, y:, height:)
+    image = Vips::Image.new_from_file(path, access: :sequential)
+    region = image.crop(0, y, image.width, height)
+    pixels = region.write_to_memory
+    bands = region.bands
+    left = image.width
+    right = -1
+
+    height.times do |row|
+      image.width.times do |column|
+        offset = (row * image.width + column) * bands
+        red = pixels.getbyte(offset)
+        green = pixels.getbyte(offset + 1)
+        blue = pixels.getbyte(offset + 2)
+        next unless red + green + blue > 250
+
+        left = column if column < left
+        right = column if column > right
+      end
+    end
+
+    assert_operator right, :>=, left, "expected title foreground pixels in rendered PNG"
+    { left: left, right: right }
   end
 end

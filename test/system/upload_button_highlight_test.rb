@@ -25,12 +25,13 @@ class UploadButtonHighlightTest < ApplicationSystemTestCase
     ])
     assert_pending_upload("images", "Upload 2 Images Now")
 
-    attach_upload("fonts", [
+    find("#font-library-manager summary").click
+    attach_upload("global-fonts", [
       upload_file("brand.ttf"),
       upload_file("display.otf"),
-      upload_file("fallback.ttc")
+      upload_file("fallback.woff2")
     ])
-    assert_pending_upload("fonts", "Upload 3 Fonts Now")
+    assert_pending_upload("global-fonts", "Upload 3 Fonts Now")
   end
 
   test "upload reminder clears after successful upload reloads the page" do
@@ -38,24 +39,82 @@ class UploadButtonHighlightTest < ApplicationSystemTestCase
 
     visit image_project_path(project)
 
-    attach_upload("fonts", upload_file("brand.ttf"))
-    assert_pending_upload("fonts", "Upload 1 Font Now")
+    find("#font-library-manager summary").click
+    attach_upload("global-fonts", upload_file("brand.ttf"))
+    assert_pending_upload("global-fonts", "Upload 1 Font Now")
 
-    within("form[data-upload-kind='fonts']") do
+    within("form[data-upload-kind='global-fonts']") do
       click_button "Upload 1 Font Now"
     end
 
     assert_text "1 font(s) uploaded."
-    assert_selector "form[data-upload-kind='fonts']"
-    assert_no_selector "form[data-upload-kind='fonts'].upload-pending"
+    assert_selector "form[data-upload-kind='global-fonts']"
+    assert_no_selector "form[data-upload-kind='global-fonts'].upload-pending"
 
-    within("form[data-upload-kind='fonts']") do
-      assert_button "Upload Fonts"
+    within("form[data-upload-kind='global-fonts']") do
+      assert_button "Upload Font"
       assert_no_text "File selected but not uploaded yet."
     end
   end
 
+  test "text layer upload control opens highlights and focuses global font upload form" do
+    project = text_layer_project(font: "")
+
+    visit image_project_path(project)
+    find("details.layers-panel summary").click
+    click_link "Upload new font"
+
+    assert_selector "details#font-library-manager[open]"
+    assert_selector "#global-font-upload-form.font-library-highlight"
+    assert_equal "global-font-file-input", page.evaluate_script("document.activeElement.id")
+    assert_text "Choose font files below."
+  end
+
+  test "font library hash opens manager on page load" do
+    project = ImageProject.create!(name: "Uploads")
+
+    visit "#{image_project_path(project)}#font-library"
+
+    assert_selector "details#font-library-manager[open]"
+  end
+
   private
+
+  def text_layer_project(font:)
+    ImageProject.create!(name: "Uploads").tap do |project|
+      project.update_config!(
+        "projectName" => "Uploads",
+        "tasks" => [
+          {
+            "targetName" => "P1",
+            "canvas" => { "width" => 1650, "height" => 2480, "backgroundColor" => "#FAFAF0", "transparent" => false },
+            "output" => { "width" => 1650, "height" => 2480, "format" => "png" },
+            "layers" => [
+              {
+                "id" => "layer0",
+                "name" => "Title",
+                "type" => "text",
+                "text" => "Title",
+                "font" => font,
+                "fontSize" => 80,
+                "color" => "#111111",
+                "letterSpacingRatio" => 0,
+                "lineHeightRatio" => 1.2,
+                "maxWidth" => 1200,
+                "autoWrap" => false,
+                "bold" => false,
+                "italic" => false,
+                "x" => "center",
+                "y" => 200,
+                "align" => "center",
+                "opacity" => 1
+              }
+            ]
+          }
+        ]
+      )
+    end
+  end
 
   def upload_file(filename)
     path = File.join(@upload_dir, filename)

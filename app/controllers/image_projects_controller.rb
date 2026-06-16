@@ -1,6 +1,6 @@
 class ImageProjectsController < ApplicationController
   before_action :set_image_project, except: %i[index new create]
-  helper_method :empty_task_status
+  helper_method :empty_task_status, :font_options_for
 
   def index
     @image_projects = ImageProject.order(updated_at: :desc)
@@ -34,15 +34,22 @@ class ImageProjectsController < ApplicationController
   end
 
   def update
+    saved = false
+
     if params.key?(:config_json_text)
       save_raw_config
     else
       save_editor_config
     end
+    saved = true
+    @image_project.reload
 
-    redirect_to image_project_path(@image_project, task_index: selected_task_index), notice: "Configuration saved."
+    respond_after_editor_save
   rescue JSON::ParserError => error
     redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: "Invalid JSON: #{error.message}"
+  rescue StandardError => error
+    alert = saved ? "#{after_save_failure_prefix}: #{error.message}" : "Configuration save failed: #{error.message}"
+    redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: alert
   end
 
   def upload_images
@@ -80,6 +87,23 @@ class ImageProjectsController < ApplicationController
     redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: "Font upload failed: #{upload_failure_message(error, FontAsset)}"
   end
 
+  def upload_global_fonts
+    result = upload_assets(:fonts, GlobalFontAsset::SUPPORTED_EXTENSIONS) do |uploaded, upload_count|
+      asset = GlobalFontAsset.create!(
+        name: uploaded.original_filename,
+        match_name: global_font_upload_match_name(upload_count, uploaded.original_filename),
+        normalized_name: ImageProjects::AssetNameNormalizer.extensionless(uploaded.original_filename)
+      )
+      attach_uploaded_file(asset.file, uploaded)
+    end
+
+    redirect_to font_library_path,
+                notice: "#{upload_notice("font", result)} Uploaded fonts are available in the global Font Library."
+  rescue StandardError => error
+    redirect_to font_library_path,
+                alert: "Global font upload failed: #{upload_failure_message(error, GlobalFontAsset)}"
+  end
+
   def import_excel
     uploaded = params[:excel_file]
     raise "Choose an Excel file to import." if uploaded.blank?
@@ -91,66 +115,43 @@ class ImageProjectsController < ApplicationController
   end
 
   def preview
+    save_request_config_if_present!
+    @image_project.reload
     index = selected_task_index
-    task = @image_project.tasks[index]
-    raise "No task exists at index #{index}." if task.blank?
-
-    result = ImageProjects::Renderer.new(@image_project).render_preview(task, scale: 0.5)
-    if result.path.present? && File.exist?(result.path)
-      begin
-        File.open(result.path, "rb") do |file|
-          @image_project.preview_file.attach(
-            io: file,
-            filename: "preview-#{result.filename}",
-            content_type: mime_type(result.format)
-          )
-        end
-        @image_project.update!(
-          preview_task_index: index,
-          preview_task_name: task_display_name(task, index)
-        )
-      ensure
-        ImageProjects::TempfileManager.delete(result.path)
-      end
-    end
-
-    flash_message = []
-    flash_message << "Warnings: #{result.warnings.join(" | ")}" if result.warnings.any?
-    flash_message << "Errors: #{result.errors.join(" | ")}" if result.errors.any?
+    ensure_task_previewable!(index)
+    result = render_preview_for_task!(index)
     redirect_to image_project_path(@image_project, task_index: index),
-                notice: flash_message.presence&.join(" ") || "Preview generated."
+                notice: preview_notice(result, "Preview generated.")
   rescue StandardError => error
     redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: "Preview failed: #{error.message}"
   end
 
   def generate
-    job = ImageProjects::GenerationRunner.call(@image_project)
+    ensure_project_downloadable!
+    job = generate_all_images!
     redirect_to image_project_path(@image_project, task_index: selected_task_index),
-                notice: "Generation #{job.status}. #{job.generated_images.count} image records created."
+                notice: generation_notice(job)
   rescue StandardError => error
     redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: "Generation failed: #{error.message}"
   end
 
   def generate_current
     index = selected_task_index
-    task = @image_project.tasks[index]
-    raise "No task exists at index #{index}." if task.blank?
-
-    job = ImageProjects::GenerationRunner.call(@image_project, task_indexes: [ index ])
+    ensure_task_previewable!(index)
+    job = generate_current_image!(index)
     redirect_to image_project_path(@image_project, task_index: index),
-                notice: "Current task generation #{job.status}. #{job.generated_images.count} image record created."
+                notice: current_generation_notice(job)
   rescue StandardError => error
     redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: "Current task generation failed: #{error.message}"
   end
 
   def download_zip
-    job = @image_project.latest_generation_job
-    raise "No generated ZIP is available yet." unless job&.zip_file&.attached?
+    save_request_config_if_present!
+    @image_project.reload
+    ensure_project_downloadable!
+    job = generate_all_images!
 
-    send_data attachment_bytes(job.zip_file),
-              filename: job.zip_file.filename.to_s,
-              type: "application/zip",
-              disposition: "attachment"
+    send_zip_file(job)
   rescue StandardError => error
     redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: error.message
   end
@@ -262,6 +263,29 @@ class ImageProjectsController < ApplicationController
     end
   end
 
+  def update_global_font_asset
+    asset = GlobalFontAsset.find(params[:asset_id])
+
+    if asset.update(match_name: params.dig(:global_font_asset, :match_name))
+      redirect_to font_library_path, notice: "Font match name updated."
+    else
+      redirect_to font_library_path,
+                  alert: "Font match name could not be updated: #{asset.errors.full_messages.to_sentence}"
+    end
+  end
+
+  def destroy_global_font_asset
+    asset = GlobalFontAsset.find(params[:asset_id])
+
+    if global_font_asset_referenced?(asset)
+      redirect_to font_library_path,
+                  alert: "Global font \"#{asset.name}\" is used by one or more projects and was not deleted."
+    else
+      asset.destroy
+      redirect_to font_library_path, notice: "Global font deleted."
+    end
+  end
+
   private
 
   def set_image_project
@@ -299,9 +323,15 @@ class ImageProjectsController < ApplicationController
     "Database is missing #{model_class.table_name}.alias_name. Please run bundle exec rails db:migrate and restart the Rails server."
   end
 
+  def font_library_path
+    image_project_path(@image_project, task_index: selected_task_index, anchor: "font-library")
+  end
+
   def load_editor_state
     @config = @image_project.config_hash
     @tasks = @config.fetch("tasks", [])
+    @global_font_assets = GlobalFontAsset.order(:name).to_a
+    @project_font_assets = @image_project.font_assets.order(:name).to_a
     @selected_task_index = selected_task_index
     @task = @tasks[@selected_task_index] || new_task("Task 1")
     @latest_job = @image_project.latest_generation_job
@@ -310,6 +340,129 @@ class ImageProjectsController < ApplicationController
     @selected_task_name = @selected_task_status[:target_name]
     @preview_matches_selected_task = preview_belongs_to_task?(@selected_task_index, @selected_task_name)
     @readiness_summary = readiness_summary_for(@tasks)
+    @selected_task_preview_readiness = task_preview_readiness(@task)
+    @selected_task_previewable = @selected_task_preview_readiness[:ready]
+    @project_download_readiness = project_download_readiness(@tasks)
+    @project_downloadable = @project_download_readiness[:ready]
+  end
+
+  def respond_after_editor_save
+    case params[:after_save_action].to_s
+    when "preview_current"
+      index = selected_task_index
+      ensure_task_previewable!(index)
+      result = render_preview_for_task!(index)
+      redirect_to image_project_path(@image_project, task_index: index),
+                  notice: preview_notice(result, "Configuration saved. Preview generated.")
+    when "download_zip"
+      ensure_project_downloadable!
+      job = generate_all_images!
+      flash[:notice] = "Configuration saved. ZIP generated."
+      send_zip_file(job)
+    when "generate_current"
+      index = selected_task_index
+      ensure_task_previewable!(index)
+      job = generate_current_image!(index)
+      redirect_to image_project_path(@image_project, task_index: index),
+                  notice: "Configuration saved. #{current_generation_notice(job)}"
+    when "generate_all"
+      ensure_project_downloadable!
+      job = generate_all_images!
+      redirect_to image_project_path(@image_project, task_index: selected_task_index),
+                  notice: "Configuration saved. #{generation_notice(job)}"
+    else
+      redirect_to image_project_path(@image_project, task_index: selected_task_index), notice: "Configuration saved."
+    end
+  end
+
+  def after_save_failure_prefix
+    case params[:after_save_action].to_s
+    when "preview_current"
+      "Configuration saved, but preview failed"
+    when "download_zip"
+      "Configuration saved, but ZIP generation failed"
+    when "generate_current"
+      "Configuration saved, but current task generation failed"
+    when "generate_all"
+      "Configuration saved, but generation failed"
+    else
+      "Configuration save failed"
+    end
+  end
+
+  def render_preview_for_task!(index)
+    task = @image_project.tasks[index]
+    raise "No task exists at index #{index}." if task.blank?
+
+    result = ImageProjects::Renderer.new(@image_project).render_preview(task, scale: 0.5)
+    attach_preview_result!(result, task, index)
+    result
+  end
+
+  def attach_preview_result!(result, task, index)
+    return unless result.path.present? && File.exist?(result.path)
+
+    begin
+      File.open(result.path, "rb") do |file|
+        @image_project.preview_file.purge if @image_project.preview_file.attached?
+        @image_project.preview_file.attach(
+          io: file,
+          filename: "preview-#{result.filename}",
+          content_type: mime_type(result.format)
+        )
+      end
+      @image_project.update!(
+        preview_task_index: index,
+        preview_task_name: task_display_name(task, index)
+      )
+    ensure
+      ImageProjects::TempfileManager.delete(result.path)
+    end
+  end
+
+  def preview_notice(result, success_message)
+    messages = [ success_message ]
+    messages << "Warnings: #{result.warnings.join(" | ")}" if result.warnings.any?
+    messages << "Errors: #{result.errors.join(" | ")}" if result.errors.any?
+    messages.join(" ")
+  end
+
+  def generate_all_images!
+    ImageProjects::GenerationRunner.call(@image_project)
+  end
+
+  def generate_current_image!(index)
+    task = @image_project.tasks[index]
+    raise "No task exists at index #{index}." if task.blank?
+
+    ImageProjects::GenerationRunner.call(@image_project, task_indexes: [ index ])
+  end
+
+  def generation_notice(job)
+    "ZIP generated. #{job.generated_images.count} image records created. Status: #{job.status}."
+  end
+
+  def current_generation_notice(job)
+    "Current task generation #{job.status}. #{job.generated_images.count} image record created."
+  end
+
+  def send_zip_file(job)
+    raise "ZIP generation did not produce a downloadable file." unless job&.zip_file&.attached?
+
+    send_data attachment_bytes(job.zip_file),
+              filename: job.zip_file.filename.to_s,
+              type: "application/zip",
+              disposition: "attachment"
+  end
+
+  def save_request_config_if_present!
+    return unless params.key?(:config_json_text) || params.key?(:task) || params.key?(:layers) || params.key?(:image_project)
+
+    if params.key?(:config_json_text)
+      save_raw_config
+    else
+      save_editor_config
+    end
   end
 
   def save_raw_config
@@ -379,7 +532,13 @@ class ImageProjectsController < ApplicationController
         "fit" => %w[contain cover stretch].include?(layer["fit"].to_s) ? layer["fit"] : "contain"
       )
     else
-      letter_spacing_mode = normalize_letter_spacing_mode(layer["letterSpacingMode"].presence || existing_layer&.dig("letterSpacingMode"))
+      submitted_letter_spacing_mode =
+        if layer.key?("letterSpacingMode")
+          layer["letterSpacingMode"]
+        else
+          existing_layer&.dig("letterSpacingMode")
+        end
+      letter_spacing_mode = normalize_letter_spacing_mode(submitted_letter_spacing_mode)
       result = common.merge(
         "text" => layer["text"].to_s,
         "font" => layer["font"].to_s.strip,
@@ -451,7 +610,7 @@ class ImageProjectsController < ApplicationController
         next
       end
 
-      yield uploaded
+      yield uploaded, files.size
       uploaded_count += 1
     end
 
@@ -515,6 +674,79 @@ class ImageProjectsController < ApplicationController
     notice
   end
 
+  def global_font_upload_match_name(upload_count, filename)
+    submitted = params.dig(:global_font_asset, :match_name).to_s.strip
+    return submitted if upload_count == 1 && submitted.present?
+
+    ImageProjects::AssetNameNormalizer.default_alias(filename)
+  end
+
+  def font_options_for(current_font)
+    current_value = current_font.to_s.strip
+    options = []
+    options << [ "Browser fallback", "" ] if current_value.blank?
+
+    if current_value.present?
+      match = ImageProjects::FontMatcher.new(@image_project).match(current_value)
+      if match.found?
+        options << [ font_option_label(match.asset), current_value ] unless current_value == match.asset.name
+      else
+        options << [ "Missing/current: #{current_value} (Missing)", current_value ]
+      end
+    end
+
+    font_option_assets.each do |asset|
+      options << [ font_option_label(asset), asset.name ]
+    end
+
+    options.uniq { |_label, value| value }
+  end
+
+  def font_option_assets
+    global = defined?(@global_font_assets) && @global_font_assets ? @global_font_assets : GlobalFontAsset.order(:name).to_a
+    project_specific = defined?(@project_font_assets) && @project_font_assets ? @project_font_assets : @image_project.font_assets.order(:name).to_a
+
+    (global + project_specific).select { |asset| font_asset_usable?(asset) }
+  end
+
+  def font_option_label(asset)
+    "#{asset.name} (#{font_asset_scope_label(asset)})"
+  end
+
+  def font_asset_scope_label(asset)
+    asset.is_a?(GlobalFontAsset) ? "Global" : "Project"
+  end
+
+  def font_asset_usable?(asset)
+    asset.respond_to?(:file) && asset.file.attached?
+  end
+
+  def global_font_asset_referenced?(asset)
+    ImageProject.find_each.any? do |project|
+      project.tasks.any? do |task|
+        Array(task["layers"]).any? do |layer|
+          layer["type"].to_s == "text" && font_value_matches_global_asset?(layer["font"], asset)
+        end
+      end
+    end
+  end
+
+  def font_value_matches_global_asset?(font_value, asset)
+    query = font_value.to_s.strip
+    return false if query.blank?
+
+    full_query = ImageProjects::AssetNameNormalizer.full(query)
+    return true if [ asset.name, asset.match_name ].compact_blank.any? { |name| ImageProjects::AssetNameNormalizer.full(name) == full_query }
+
+    extensionless_query = ImageProjects::AssetNameNormalizer.extensionless(query)
+    return true if [ asset.name, asset.normalized_name ].compact_blank.any? { |name| ImageProjects::AssetNameNormalizer.extensionless(name) == extensionless_query }
+
+    loose_query = ImageProjects::AssetNameNormalizer.loose(query)
+    [ asset.name, asset.normalized_name, asset.match_name ].compact_blank.any? do |name|
+      ImageProjects::AssetNameNormalizer.loose(name) == loose_query
+    end
+  end
+
   def apply_editor_operation!(config)
     operation = params[:editor_operation].to_s
     return if operation.blank?
@@ -542,6 +774,97 @@ class ImageProjectsController < ApplicationController
     end
   end
 
+  def ensure_task_previewable!(index)
+    task = @image_project.tasks[index]
+    readiness = task_preview_readiness(task)
+    raise readiness[:alert] unless readiness[:ready]
+  end
+
+  def ensure_project_downloadable!
+    readiness = project_download_readiness(@image_project.tasks)
+    raise readiness[:alert] unless readiness[:ready]
+  end
+
+  def task_preview_readiness(task)
+    layers = Array(task && task["layers"])
+    if layers.empty?
+      return {
+        ready: false,
+        message: "Add at least one layer before previewing.",
+        alert: "Please import Excel or add layers before previewing."
+      }
+    end
+
+    unless layers.any? { |layer| renderable_layer?(layer) }
+      return {
+        ready: false,
+        message: "Add at least one renderable text or image layer before previewing.",
+        alert: "Please import Excel or add renderable layers before previewing."
+      }
+    end
+
+    missing_images = missing_required_images_for_tasks([ task ])
+    if missing_images.any?
+      return {
+        ready: false,
+        message: "Upload the required source images before previewing: #{missing_images.join(', ')}.",
+        alert: "Please upload the required source images before previewing."
+      }
+    end
+
+    { ready: true, message: nil, alert: nil }
+  end
+
+  def project_download_readiness(tasks)
+    task_list = Array(tasks)
+    if task_list.empty? || task_list.none? { |task| Array(task["layers"]).any? { |layer| renderable_layer?(layer) } }
+      return {
+        ready: false,
+        message: "Import Excel or add at least one renderable layer before downloading the ZIP.",
+        alert: "Please import Excel or add layers before downloading the ZIP."
+      }
+    end
+
+    missing_images = missing_required_images_for_tasks(task_list)
+    if missing_images.any?
+      return {
+        ready: false,
+        message: "Upload the required source images before downloading the ZIP: #{missing_images.join(', ')}.",
+        alert: "Please upload the required source images before downloading the ZIP."
+      }
+    end
+
+    { ready: true, message: nil, alert: nil }
+  end
+
+  def renderable_layer?(layer)
+    case layer["type"].to_s
+    when "text"
+      ImageProjects::InlineTextParser.plain_text(layer["text"]).strip.present?
+    when "image"
+      layer["imageName"].to_s.strip.present?
+    else
+      false
+    end
+  end
+
+  def missing_required_images_for_tasks(tasks)
+    image_matcher = ImageProjects::ImageMatcher.new(@image_project)
+    Array(tasks).flat_map do |task|
+      Array(task && task["layers"]).filter_map do |layer|
+        next unless layer["type"].to_s == "image"
+
+        image_name = layer["imageName"].to_s.strip
+        next if image_name.blank?
+
+        match = image_matcher.match(image_name)
+        next if match.found? && match.asset.file.attached?
+
+        image_name
+      end
+    end.uniq
+  end
+
   def task_statuses_for(tasks, latest_job)
     image_matcher = ImageProjects::ImageMatcher.new(@image_project)
     font_matcher = ImageProjects::FontMatcher.new(@image_project)
@@ -561,13 +884,17 @@ class ImageProjectsController < ApplicationController
           next if image_name.blank?
 
           match = image_matcher.match(image_name)
-          if match.found?
+          if match.found? && match.asset.file.attached?
             warnings << match.warning if match.warning.present?
             next
           end
 
           missing_image = true
-          errors << "Task #{target_name} could not be generated because source image \"#{image_name}\" was not found."
+          errors << if match.found?
+                      "Task #{target_name} could not be generated because source image \"#{image_name}\" matched \"#{match.asset.name}\", but the uploaded asset has no attached file."
+                    else
+                      "Task #{target_name} could not be generated because source image \"#{image_name}\" was not found."
+                    end
         when "text"
           font_name = layer["font"].to_s.strip
           next if font_name.blank?

@@ -28,7 +28,7 @@
       </div>
       <%= form_with url: import_excel_image_project_path(@image_project, task_index: @selected_task_index), method: :post, multipart: true, class: "workflow-form", data: { upload_reminder: true, upload_kind: "excel", upload_pending_label: "Import Excel Now" } do |form| %>
         <%= form.file_field :excel_file, accept: ".xlsx,.xls" %>
-        <%= form.submit "Import Excel", class: "button primary" %>
+        <button type="submit" class="button primary" data-processing-label="Uploading...">Import Excel</button>
         <p class="upload-reminder-message" hidden data-upload-reminder-message>File selected but not uploaded yet.</p>
       <% end %>
     </div>
@@ -41,98 +41,34 @@
       </div>
       <%= form_with url: upload_images_image_project_path(@image_project, task_index: @selected_task_index), method: :post, multipart: true, class: "workflow-form", data: { upload_reminder: true, upload_kind: "images", upload_action: "Upload", upload_singular: "Image", upload_plural: "Images" } do |form| %>
         <%= form.file_field :images, multiple: true, include_hidden: false, accept: ".png,.jpg,.jpeg,.webp" %>
-        <%= form.submit "Upload Images", class: "button" %>
-        <p class="upload-reminder-message" hidden data-upload-reminder-message>File selected but not uploaded yet.</p>
-      <% end %>
-    </div>
-
-    <div class="workflow-step">
-      <div>
-        <span class="step-label">Step 3</span>
-        <h2>Upload Fonts</h2>
-        <p>Upload any fonts referenced by the Excel file.</p>
-      </div>
-      <%= form_with url: upload_fonts_image_project_path(@image_project, task_index: @selected_task_index), method: :post, multipart: true, class: "workflow-form", data: { upload_reminder: true, upload_kind: "fonts", upload_action: "Upload", upload_singular: "Font", upload_plural: "Fonts" } do |form| %>
-        <%= form.file_field :fonts, multiple: true, include_hidden: false, accept: ".ttf,.otf,.ttc" %>
-        <%= form.submit "Upload Fonts", class: "button" %>
+        <button type="submit" class="button" data-processing-label="Uploading...">Upload Images</button>
         <p class="upload-reminder-message" hidden data-upload-reminder-message>File selected but not uploaded yet.</p>
       <% end %>
     </div>
 
     <div class="workflow-step generate-step">
       <div>
-        <span class="step-label">Step 5</span>
-        <h2>Preview / Generate / Download</h2>
-        <p>Preview or generate the currently selected image task.</p>
+        <span class="step-label">Step 3</span>
+        <h2>Preview / Download</h2>
+        <p>Preview the selected image, then download the final ZIP for all images.</p>
       </div>
       <div class="selected-task-banner">
         <span>Selected Image: <strong><%= selected_task_name %></strong></span>
       </div>
       <div class="workflow-actions">
-        <%= button_to "Preview #{selected_task_name}", preview_image_project_path(@image_project, task_index: @selected_task_index), method: :post, class: "button" %>
-        <%= button_to "Generate #{selected_task_name}", generate_current_image_project_path(@image_project, task_index: @selected_task_index), method: :post, class: "button primary" %>
-        <%= button_to "Generate All Images", generate_image_project_path(@image_project, task_index: @selected_task_index), method: :post, class: "button primary" %>
-        <% if @latest_job&.zip_file&.attached? %>
-          <%= link_to "Download ZIP", download_zip_image_project_path(@image_project, task_index: @selected_task_index), class: "button success" %>
-        <% else %>
-          <span class="button disabled">Download ZIP</span>
-        <% end %>
+        <div class="workflow-action-item">
+          <%= button_tag "Preview Selected Image", type: "submit", form: "task-editor-form", name: "after_save_action", value: "preview_current", class: "button", disabled: !@selected_task_previewable, data: { processing_label: "Generating preview..." } %>
+          <% unless @selected_task_previewable %>
+            <p class="field-help workflow-disabled-message"><%= @selected_task_preview_readiness[:message] %></p>
+          <% end %>
+        </div>
+        <div class="workflow-action-item">
+          <%= button_tag "Download ZIP (All Images)", type: "submit", form: "task-editor-form", name: "after_save_action", value: "download_zip", class: "button success", disabled: !@project_downloadable, data: { processing_label: "Generating images and preparing ZIP..." } %>
+          <% unless @project_downloadable %>
+            <p class="field-help workflow-disabled-message"><%= @project_download_readiness[:message] %></p>
+          <% end %>
+        </div>
       </div>
-    </div>
-  </section>
-
-  <section class="panel readiness-panel" aria-label="Import summary and readiness checklist">
-    <div class="readiness-column">
-      <h2>Import Summary</h2>
-      <p>Imported <%= pluralize(@readiness_summary[:tasks].size, "task") %>:</p>
-      <ul class="check-list">
-        <% @readiness_summary[:tasks].each do |task_name| %>
-          <li><span class="readiness-icon ok" aria-hidden="true">&#10003;</span><%= task_name %></li>
-        <% end %>
-      </ul>
-    </div>
-
-    <div class="readiness-column">
-      <h2>Required Images</h2>
-      <% if @readiness_summary[:images].any? %>
-        <ul class="check-list">
-          <% @readiness_summary[:images].each do |item| %>
-            <li class="readiness-<%= item[:status] %>">
-              <span class="readiness-icon <%= item[:status] == "matched" ? "ok" : "missing" %>" aria-hidden="true"><%= item[:status] == "matched" ? "&#10003;".html_safe : "&#10007;".html_safe %></span>
-              <%= item[:message] %>
-            </li>
-          <% end %>
-        </ul>
-      <% else %>
-        <p class="empty-note">No image references found in the selected tasks.</p>
-      <% end %>
-    </div>
-
-    <div class="readiness-column">
-      <h2>Required Fonts</h2>
-      <% if @readiness_summary[:fonts].any? %>
-        <ul class="check-list">
-          <% @readiness_summary[:fonts].each do |item| %>
-            <li class="readiness-<%= item[:status] %>">
-              <span class="readiness-icon <%= item[:status] == "matched" ? "ok" : "warning" %>" aria-hidden="true"><%= item[:status] == "matched" ? "&#10003;".html_safe : "&#9888;".html_safe %></span>
-              <%= item[:message] %>
-            </li>
-          <% end %>
-        </ul>
-        <% if @readiness_summary[:fonts].any? { |item| item[:status] == "warning" } %>
-          <div class="hint-box">
-            <strong>Why does my output look different?</strong>
-            <ul>
-              <li>upload the correct font files</li>
-              <li>check Excel Match Name</li>
-              <li>preview is scaled</li>
-              <li>design-friendly mode may adjust visual layout</li>
-            </ul>
-          </div>
-        <% end %>
-      <% else %>
-        <p class="empty-note">No font references found in the selected tasks.</p>
-      <% end %>
     </div>
   </section>
 
@@ -140,12 +76,11 @@
     <aside class="panel task-panel">
       <div class="panel-heading">
         <div>
-          <span class="step-label">Step 4</span>
-          <h2>Select Image Task</h2>
+          <h2>Select Task</h2>
         </div>
         <%= button_to "Add", add_task_image_project_path(@image_project), method: :post, class: "button small" %>
       </div>
-      <p class="helper-text">Select a task below to preview or generate that image.</p>
+      <p class="helper-text">Select a task below to preview that image.</p>
 
       <div class="task-list">
         <% @tasks.each_with_index do |task, index| %>
@@ -186,7 +121,7 @@
           <span class="status-badge status-<%= @selected_task_status[:status] %>"><%= @selected_task_status[:label] %></span>
         </div>
         <p class="current-task-name">Selected Image: <strong><%= selected_task_name %></strong></p>
-        <p class="preview-scale-note">Preview is scaled for browser display. Final output size: <strong><%= final_width %> x <%= final_height %></strong>. Download ZIP contains the full-size generated image.</p>
+        <p class="preview-scale-note">Preview is scaled for browser display. Final output size: <strong><%= final_width %> x <%= final_height %></strong>. Download ZIP contains full-size generated images for all tasks.</p>
         <div class="preview-stage">
           <% if @preview_matches_selected_task %>
             <p class="preview-owner">Scaled preview for <%= @image_project.preview_task_name %></p>
@@ -194,7 +129,7 @@
           <% else %>
             <div class="preview-empty">
               <p class="empty-note">No preview generated for <%= selected_task_name %> yet.</p>
-              <p class="empty-note">Click Preview <%= selected_task_name %> to generate one.</p>
+              <p class="empty-note">Click Preview Selected Image to generate one.</p>
               <% if @image_project.preview_file.attached? && @image_project.preview_task_name.present? %>
                 <p class="muted">Last preview belongs to <%= @image_project.preview_task_name %>.</p>
               <% end %>
@@ -204,7 +139,7 @@
       </section>
 
     <section class="panel editor-panel">
-      <%= form_with model: @image_project, method: :patch, class: "stack" do |form| %>
+      <%= form_with model: @image_project, method: :patch, class: "stack", id: "task-editor-form" do |form| %>
         <%= hidden_field_tag :task_index, @selected_task_index %>
 
         <div class="form-toolbar">
@@ -212,7 +147,7 @@
             <span>Project Name</span>
             <%= form.text_field :name %>
           </label>
-          <%= form.submit "Save Task", class: "button primary" %>
+          <button type="submit" class="button primary" data-processing-label="Saving...">Save Changes</button>
         </div>
 
         <div class="section-heading">
@@ -276,7 +211,9 @@
             </div>
 
             <% @task.fetch("layers", []).each_with_index do |layer, index| %>
-              <article class="layer-card">
+              <% layer_type = layer["type"].presence || "text" %>
+              <% spread_mode = layer["letterSpacingMode"].to_s == "spread" %>
+              <article class="layer-card" data-controller="conditional-sections" data-conditional-sections-source-attribute-value="layer-type-source" data-conditional-sections-section-attribute-value="layer-type-section">
                 <div class="layer-header">
                   <strong><%= layer["name"].presence || "Layer #{index + 1}" %></strong>
                   <div class="inline-actions">
@@ -295,7 +232,7 @@
                   </label>
                   <label>
                     <span>Layer Type</span>
-                    <%= select_tag "layers[#{index}][type]", options_for_select(%w[image text], layer["type"]) %>
+                    <%= select_tag "layers[#{index}][type]", options_for_select(%w[image text], layer_type), data: { layer_type_source: true, action: "change->conditional-sections#update" } %>
                   </label>
                   <label>
                     <span>X</span>
@@ -306,95 +243,99 @@
                     <%= text_field_tag "layers[#{index}][y]", layer["y"] %>
                   </label>
 
-                  <% if layer["type"] == "image" %>
-                    <label>
-                      <span>Source Image</span>
-                      <%= text_field_tag "layers[#{index}][imageName]", layer["imageName"] %>
-                    </label>
-                    <label>
-                      <span>Width</span>
-                      <%= number_field_tag "layers[#{index}][width]", layer["width"], min: 1 %>
-                    </label>
-                    <label>
-                      <span>Height</span>
-                      <%= number_field_tag "layers[#{index}][height]", layer["height"], min: 1 %>
-                    </label>
-                    <label>
-                      <span>Fit Mode</span>
-                      <%= select_tag "layers[#{index}][fit]", options_for_select(%w[contain cover stretch], layer["fit"]) %>
-                    </label>
-                  <% else %>
-                    <label class="span-2">
-                      <span>Text Content</span>
-                      <%= text_area_tag "layers[#{index}][text]", layer["text"], rows: 3 %>
-                    </label>
-                    <label>
-                      <span>Font</span>
-                      <%= text_field_tag "layers[#{index}][font]", layer["font"] %>
-                    </label>
-                    <label>
-                      <span>Font Size</span>
-                      <%= number_field_tag "layers[#{index}][fontSize]", layer["fontSize"], min: 1 %>
-                    </label>
-                    <label>
-                      <span>Text Color</span>
-                      <%= text_field_tag "layers[#{index}][color]", layer["color"] %>
-                    </label>
-                    <label>
-                      <span>Letter Spacing</span>
-                      <%= number_field_tag "layers[#{index}][letterSpacingRatio]", layer["letterSpacingRatio"] || 0, step: 0.01 %>
-                    </label>
-                    <label>
-                      <span>Line Height</span>
-                      <%= number_field_tag "layers[#{index}][lineHeightRatio]", layer["lineHeightRatio"] || 1.2, step: 0.05 %>
-                    </label>
-                    <label>
-                      <span>Max Width</span>
-                      <%= number_field_tag "layers[#{index}][maxWidth]", layer["maxWidth"], min: 1 %>
-                    </label>
-                    <label>
-                      <span>Alignment</span>
-                      <%= select_tag "layers[#{index}][align]", options_for_select(%w[left center right], layer["align"]) %>
-                    </label>
-                    <label class="check-row compact-check">
-                      <%= hidden_field_tag "layers[#{index}][autoWrap]", "0" %>
-                      <%= check_box_tag "layers[#{index}][autoWrap]", "1", layer["autoWrap"] == true %>
-                      <span>Auto Wrap</span>
-                    </label>
-                  <% end %>
+                  <label data-layer-type-section="image" <%= "hidden" unless layer_type == "image" %>>
+                    <span>Source Image</span>
+                    <%= text_field_tag "layers[#{index}][imageName]", layer["imageName"] %>
+                  </label>
+                  <label data-layer-type-section="image" <%= "hidden" unless layer_type == "image" %>>
+                    <span>Width</span>
+                    <%= number_field_tag "layers[#{index}][width]", layer["width"].presence || 800, min: 1 %>
+                  </label>
+                  <label data-layer-type-section="image" <%= "hidden" unless layer_type == "image" %>>
+                    <span>Height</span>
+                    <%= number_field_tag "layers[#{index}][height]", layer["height"].presence || 800, min: 1 %>
+                  </label>
+                  <label data-layer-type-section="image" <%= "hidden" unless layer_type == "image" %>>
+                    <span>Fit Mode</span>
+                    <%= select_tag "layers[#{index}][fit]", options_for_select(%w[contain cover stretch], layer["fit"].presence || "contain") %>
+                  </label>
+
+                  <label class="span-2" data-layer-type-section="text" <%= "hidden" unless layer_type == "text" %>>
+                    <span>Text Content</span>
+                    <%= text_area_tag "layers[#{index}][text]", layer["text"], rows: 3 %>
+                    <small class="field-help">Inline formatting supported: **bold** and *italic*. Example: **DESIGN** HIGHLIGHTS</small>
+                  </label>
+                  <label class="font-field span-2" data-layer-type-section="text" <%= "hidden" unless layer_type == "text" %>>
+                    <span>Font</span>
+                    <div class="font-picker-row">
+                      <%= select_tag "layers[#{index}][font]", options_for_select(font_options_for(layer["font"]), layer["font"].to_s.strip) %>
+                      <%= link_to "Upload new font", "#global-font-upload-form", class: "button tiny", data: { open_font_library: true } %>
+                    </div>
+                    <small class="field-help">Upload fonts once to the global library, then select them here.</small>
+                  </label>
+                  <label data-layer-type-section="text" <%= "hidden" unless layer_type == "text" %>>
+                    <span>Font Size</span>
+                    <%= number_field_tag "layers[#{index}][fontSize]", layer["fontSize"].presence || 60, min: 1 %>
+                  </label>
+                  <label data-layer-type-section="text" <%= "hidden" unless layer_type == "text" %>>
+                    <span>Text Color</span>
+                    <%= text_field_tag "layers[#{index}][color]", layer["color"].presence || "#1F1F1F" %>
+                  </label>
+                  <label data-layer-type-section="text" <%= "hidden" unless layer_type == "text" %>>
+                    <span>Letter Spacing</span>
+                    <%= number_field_tag "layers[#{index}][letterSpacingRatio]", layer["letterSpacingRatio"] || 0, step: 0.01 %>
+                    <small class="field-help">0.3 means 30% of font size. With font size 80, 0.3 = 24px.</small>
+                    <small class="field-help">Large values such as 0.65 create very wide tracking.</small>
+                  </label>
+                  <label data-layer-type-section="text" <%= "hidden" unless layer_type == "text" %>>
+                    <span>Line Height</span>
+                    <%= number_field_tag "layers[#{index}][lineHeightRatio]", layer["lineHeightRatio"] || 1.2, step: 0.05 %>
+                  </label>
+                  <label data-layer-type-section="text" <%= "hidden" unless layer_type == "text" %>>
+                    <span>Max Width</span>
+                    <%= number_field_tag "layers[#{index}][maxWidth]", layer["maxWidth"].presence || 1200, min: 1 %>
+                  </label>
+                  <label data-layer-type-section="text" <%= "hidden" unless layer_type == "text" %>>
+                    <span>Alignment</span>
+                    <%= select_tag "layers[#{index}][align]", options_for_select(%w[left center right], layer["align"].presence || "center") %>
+                  </label>
+                  <label class="check-row compact-check" data-layer-type-section="text" <%= "hidden" unless layer_type == "text" %>>
+                    <%= hidden_field_tag "layers[#{index}][autoWrap]", "0" %>
+                    <%= check_box_tag "layers[#{index}][autoWrap]", "1", layer.key?("autoWrap") ? layer["autoWrap"] == true : true %>
+                    <span>Auto Wrap</span>
+                  </label>
                 </div>
 
                 <details class="layer-advanced">
                   <summary>Advanced layer options</summary>
-                  <div class="form-grid">
+                  <div class="form-grid" data-controller="conditional-sections" data-conditional-sections-source-attribute-value="letter-spacing-mode-source" data-conditional-sections-section-attribute-value="letter-spacing-mode-section" data-conditional-sections-disable-hidden-value="true">
                     <label>
                       <span>Opacity</span>
                       <%= number_field_tag "layers[#{index}][opacity]", layer["opacity"] || 1, min: 0, max: 1, step: 0.01 %>
                     </label>
-                    <% if layer["type"] == "text" %>
-                      <label class="check-row compact-check">
-                        <%= hidden_field_tag "layers[#{index}][bold]", "0" %>
-                        <%= check_box_tag "layers[#{index}][bold]", "1", layer["bold"] == true %>
-                        <span>Bold</span>
-                      </label>
-                      <label class="check-row compact-check">
-                        <%= hidden_field_tag "layers[#{index}][italic]", "0" %>
-                        <%= check_box_tag "layers[#{index}][italic]", "1", layer["italic"] == true %>
-                        <span>Italic</span>
-                      </label>
-                      <label>
-                        <span>Letter Spacing Mode</span>
-                        <%= select_tag "layers[#{index}][letterSpacingMode]", options_for_select([["Ratio", ""], ["Spread to target width", "spread"]], layer["letterSpacingMode"].to_s) %>
-                      </label>
-                      <label>
-                        <span>Target Text Width Ratio</span>
-                        <%= number_field_tag "layers[#{index}][targetTextWidthRatio]", layer["targetTextWidthRatio"] || 0.78, min: 0.5, max: 0.95, step: 0.01 %>
-                      </label>
-                      <label class="span-2">
-                        <span>Notes</span>
-                        <%= text_area_tag "layers[#{index}][notes]", layer["notes"], rows: 2 %>
-                      </label>
-                    <% end %>
+                    <label class="check-row compact-check" data-layer-type-section="text" <%= "hidden" unless layer_type == "text" %>>
+                      <%= hidden_field_tag "layers[#{index}][bold]", "0" %>
+                      <%= check_box_tag "layers[#{index}][bold]", "1", layer["bold"] == true %>
+                      <span>Bold</span>
+                      <small class="field-help">Whole-layer Bold affects all text. For only one word, use **word** in Text Content.</small>
+                    </label>
+                    <label class="check-row compact-check" data-layer-type-section="text" <%= "hidden" unless layer_type == "text" %>>
+                      <%= hidden_field_tag "layers[#{index}][italic]", "0" %>
+                      <%= check_box_tag "layers[#{index}][italic]", "1", layer["italic"] == true %>
+                      <span>Italic</span>
+                    </label>
+                    <label data-layer-type-section="text" <%= "hidden" unless layer_type == "text" %>>
+                      <span>Letter Spacing Mode</span>
+                      <%= select_tag "layers[#{index}][letterSpacingMode]", options_for_select([["Ratio", ""], ["Spread to target width", "spread"]], layer["letterSpacingMode"].to_s), data: { letter_spacing_mode_source: true, action: "change->conditional-sections#update" } %>
+                    </label>
+                    <label id="layer-<%= index %>-target-text-width-ratio-field" data-layer-type-section="text" data-letter-spacing-mode-section="spread" <%= "hidden" unless layer_type == "text" && spread_mode %>>
+                      <span>Target Text Width Ratio</span>
+                      <%= number_field_tag "layers[#{index}][targetTextWidthRatio]", layer["targetTextWidthRatio"] || 0.78, min: 0.5, max: 0.95, step: 0.01, disabled: !spread_mode %>
+                    </label>
+                    <label class="span-2" data-layer-type-section="text" <%= "hidden" unless layer_type == "text" %>>
+                      <span>Notes</span>
+                      <%= text_area_tag "layers[#{index}][notes]", layer["notes"], rows: 2 %>
+                    </label>
                   </div>
                 </details>
               </article>
@@ -419,6 +360,22 @@
           </div>
         <% else %>
           <p class="empty-note">No current warnings or errors.</p>
+        <% end %>
+      </section>
+
+      <section class="panel">
+        <h2>Required Images</h2>
+        <% if @readiness_summary[:images].any? %>
+          <ul class="check-list compact-list">
+            <% @readiness_summary[:images].each do |item| %>
+              <li class="readiness-<%= item[:status] %>">
+                <span class="readiness-icon <%= item[:status] == "matched" ? "ok" : "missing" %>" aria-hidden="true"><%= item[:status] == "matched" ? "&#10003;".html_safe : "&#10007;".html_safe %></span>
+                <%= item[:message] %>
+              </li>
+            <% end %>
+          </ul>
+        <% else %>
+          <p class="empty-note">No image references found.</p>
         <% end %>
       </section>
 
@@ -452,30 +409,91 @@
         </div>
       </section>
 
-      <section class="panel">
-        <h2>Font Assets</h2>
-        <div class="asset-list">
-          <% @image_project.font_assets.each do |asset| %>
-            <div class="asset-row no-thumb">
-              <div class="asset-meta">
-                <span class="asset-label">Uploaded file</span>
-                <strong><%= asset.name %></strong>
-                <%= form_with url: update_font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :patch, class: "asset-alias-form" do %>
-                  <label>
-                    <span>Excel Match Name</span>
-                    <%= text_field_tag "font_asset[alias_name]", asset.alias_name.presence || asset.normalized_name %>
-                    <small class="field-help">If Excel lists this font, this field should match that name.</small>
-                  </label>
-                  <%= submit_tag "Save", class: "button tiny" %>
-                <% end %>
-              </div>
-              <%= button_to "Delete", font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :delete, class: "button tiny danger" %>
-            </div>
-          <% end %>
-          <% if @image_project.font_assets.empty? %>
-            <p class="empty-note">No font assets uploaded yet.</p>
+      <section class="panel font-library-panel" id="font-library">
+        <div class="panel-heading">
+          <h2>Font Library</h2>
+          <span class="summary-meta"><%= pluralize(@global_font_assets.size, "global font") %></span>
+        </div>
+
+        <div class="sidebar-section">
+          <h3>Required Fonts</h3>
+          <% if @readiness_summary[:fonts].any? %>
+            <ul class="check-list compact-list">
+              <% @readiness_summary[:fonts].each do |item| %>
+                <li class="readiness-<%= item[:status] %>">
+                  <span class="readiness-icon <%= item[:status] == "matched" ? "ok" : "warning" %>" aria-hidden="true"><%= item[:status] == "matched" ? "&#10003;".html_safe : "&#9888;".html_safe %></span>
+                  <%= item[:message] %>
+                </li>
+              <% end %>
+            </ul>
+          <% else %>
+            <p class="empty-note">No font references found.</p>
           <% end %>
         </div>
+
+        <% font_library_manager_open = @readiness_summary[:fonts].any? { |item| item[:status] != "matched" } %>
+        <details id="font-library-manager" class="compact-details" <%= "open" if font_library_manager_open %>>
+          <summary>Manage Font Library</summary>
+          <div class="details-body">
+            <%= form_with url: upload_global_fonts_image_project_path(@image_project, task_index: @selected_task_index), method: :post, multipart: true, id: "global-font-upload-form", class: "workflow-form compact-upload-form", data: { upload_reminder: true, upload_kind: "global-fonts", upload_action: "Upload", upload_singular: "Font", upload_plural: "Fonts" } do |form| %>
+              <%= form.file_field :fonts, multiple: true, include_hidden: false, accept: ".ttf,.otf,.woff,.woff2", id: "global-font-file-input", data: { global_font_file_input: true } %>
+              <label>
+                <span>Excel Match Name</span>
+                <%= text_field_tag "global_font_asset[match_name]", nil, placeholder: "Optional for one font" %>
+              </label>
+              <button type="submit" class="button" data-processing-label="Uploading...">Upload Font</button>
+              <p id="global-font-upload-helper" class="field-help" data-font-library-helper>Choose .ttf, .otf, .woff, or .woff2 font files.</p>
+              <p class="upload-reminder-message" hidden data-upload-reminder-message>File selected but not uploaded yet.</p>
+            <% end %>
+
+            <div class="asset-list">
+              <h3>Global Uploaded Fonts</h3>
+              <% @global_font_assets.each do |asset| %>
+                <div class="asset-row no-thumb">
+                  <div class="asset-meta">
+                    <span class="asset-label">Global</span>
+                    <strong><%= asset.name %></strong>
+                    <%= form_with url: update_global_font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :patch, class: "asset-alias-form" do %>
+                      <label>
+                        <span>Excel Match Name</span>
+                        <%= text_field_tag "global_font_asset[match_name]", asset.match_name.presence || asset.normalized_name %>
+                      </label>
+                      <%= submit_tag "Save", class: "button tiny" %>
+                    <% end %>
+                  </div>
+                  <%= button_to "Delete", global_font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :delete, class: "button tiny danger", form: { data: { turbo_confirm: "Delete this global font for all projects?" } } %>
+                </div>
+              <% end %>
+              <% if @global_font_assets.empty? %>
+                <p class="empty-note">No global fonts uploaded yet.</p>
+              <% end %>
+            </div>
+
+            <% if @project_font_assets.any? %>
+              <details class="compact-details legacy-fonts">
+                <summary>Project legacy fonts (<%= @project_font_assets.size %>)</summary>
+                <div class="asset-list">
+                  <% @project_font_assets.each do |asset| %>
+                    <div class="asset-row no-thumb">
+                      <div class="asset-meta">
+                        <span class="asset-label">Project</span>
+                        <strong><%= asset.name %></strong>
+                        <%= form_with url: update_font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :patch, class: "asset-alias-form" do %>
+                          <label>
+                            <span>Excel Match Name</span>
+                            <%= text_field_tag "font_asset[alias_name]", asset.alias_name.presence || asset.normalized_name %>
+                          </label>
+                          <%= submit_tag "Save", class: "button tiny" %>
+                        <% end %>
+                      </div>
+                      <%= button_to "Delete", font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :delete, class: "button tiny danger" %>
+                    </div>
+                  <% end %>
+                </div>
+              </details>
+            <% end %>
+          </div>
+        </details>
       </section>
 
       <% if @latest_job %>
@@ -506,7 +524,7 @@
           <%= hidden_field_tag :task_index, @selected_task_index %>
           <%= form.text_field :name %>
           <%= text_area_tag :config_json_text, @image_project.config_json, rows: 18, class: "json-box" %>
-          <%= form.submit "Save Raw JSON", class: "button" %>
+          <button type="submit" class="button" data-processing-label="Saving...">Save Raw JSON</button>
         <% end %>
       </details>
 
@@ -539,6 +557,90 @@
       } else {
         control.textContent = label;
       }
+    }
+
+    function submitterForEvent(event) {
+      if (event.submitter) {
+        return event.submitter;
+      }
+
+      var active = document.activeElement;
+      if (active && active.form === event.target && active.matches('button, input[type="submit"]')) {
+        return active;
+      }
+
+      return submitControlFor(event.target);
+    }
+
+    function defaultProcessingLabel(control, form) {
+      var action = control.value || "";
+      var label = labelFor(control).trim().toLowerCase();
+
+      if (action === "preview_current") {
+        return "Generating preview...";
+      }
+
+      if (action === "download_zip") {
+        return "Generating images and preparing ZIP...";
+      }
+
+      if (label.indexOf("generate") !== -1) {
+        return "Generating...";
+      }
+
+      if (form.enctype === "multipart/form-data" || label.indexOf("upload") !== -1 || label.indexOf("import") !== -1) {
+        return "Uploading...";
+      }
+
+      if (label.indexOf("save") !== -1) {
+        return "Saving...";
+      }
+
+      return "Processing...";
+    }
+
+    function preserveSubmitterValue(form, control) {
+      if (!control || !control.name) {
+        return;
+      }
+
+      var hidden = document.createElement("input");
+      hidden.type = "hidden";
+      hidden.name = control.name;
+      hidden.value = control.value;
+      hidden.dataset.submitterValue = "true";
+      form.appendChild(hidden);
+    }
+
+    function setProcessingState(form, control) {
+      if (!control) {
+        return;
+      }
+
+      if (!control.dataset.defaultLabel) {
+        control.dataset.defaultLabel = labelFor(control);
+      }
+
+      setLabel(control, control.dataset.processingLabel || defaultProcessingLabel(control, form));
+      control.classList.add("is-processing");
+      control.setAttribute("aria-busy", "true");
+      control.disabled = true;
+    }
+
+    function initializeProcessingState() {
+      document.addEventListener("submit", function(event) {
+        var form = event.target;
+        var submitter = submitterForEvent(event);
+
+        if (form.dataset.submitting === "true") {
+          event.preventDefault();
+          return;
+        }
+
+        form.dataset.submitting = "true";
+        preserveSubmitterValue(form, submitter);
+        setProcessingState(form, submitter);
+      });
     }
 
     function selectedFileCount(input) {
@@ -615,10 +717,76 @@
       });
     }
 
+    function highlightFontLibrary(panel, form) {
+      [panel, form].forEach(function(element) {
+        if (!element) {
+          return;
+        }
+
+        element.classList.remove("font-library-highlight");
+        void element.offsetWidth;
+        element.classList.add("font-library-highlight");
+        window.setTimeout(function() {
+          element.classList.remove("font-library-highlight");
+        }, 1800);
+      });
+    }
+
+    function openFontLibrary(options) {
+      var manager = document.getElementById("font-library-manager");
+      var panel = document.getElementById("font-library");
+      var form = document.getElementById("global-font-upload-form");
+      var input = document.querySelector("[data-global-font-file-input]");
+      var helper = document.querySelector("[data-font-library-helper]");
+      options = options || {};
+
+      if (manager) {
+        manager.open = true;
+      }
+
+      if (helper && options.fromLayerControl) {
+        helper.textContent = "Choose font files below.";
+      }
+
+      window.setTimeout(function() {
+        var scrollTarget = form || panel || manager;
+        if (scrollTarget) {
+          scrollTarget.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+        if (options.focusInput && input) {
+          try {
+            input.focus({ preventScroll: true });
+          } catch (error) {
+            input.focus();
+          }
+        }
+        highlightFontLibrary(panel, form);
+      }, 0);
+    }
+
+    function initializeFontLibraryControls() {
+      document.querySelectorAll("[data-open-font-library]").forEach(function(control) {
+        control.addEventListener("click", function(event) {
+          event.preventDefault();
+          openFontLibrary({ focusInput: true, fromLayerControl: true });
+        });
+      });
+
+      if (window.location.hash === "#font-library" || window.location.hash === "#global-font-upload-form") {
+        openFontLibrary({ focusInput: window.location.hash === "#global-font-upload-form" });
+      }
+    }
+
     if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", initializeUploadReminders);
+      document.addEventListener("DOMContentLoaded", function() {
+        initializeUploadReminders();
+        initializeFontLibraryControls();
+        initializeProcessingState();
+      });
     } else {
       initializeUploadReminders();
+      initializeFontLibraryControls();
+      initializeProcessingState();
     }
   })();
 </script>

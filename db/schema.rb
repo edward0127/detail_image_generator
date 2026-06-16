@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_06_11_160000) do
+ActiveRecord::Schema[8.1].define(version: 2026_06_16_000000) do
   create_table "active_storage_attachments", force: :cascade do |t|
     t.bigint "blob_id", null: false
     t.datetime "created_at", null: false
@@ -62,6 +62,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_11_160000) do
     t.text "warnings", default: "[]", null: false
     t.integer "width"
     t.index ["image_generation_job_id"], name: "index_generated_images_on_image_generation_job_id"
+  end
+
+  create_table "global_font_assets", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "match_name", default: "", null: false
+    t.string "name", null: false
+    t.string "normalized_name", null: false
+    t.datetime "updated_at", null: false
+    t.index ["match_name"], name: "index_global_font_assets_on_match_name"
+    t.index ["normalized_name"], name: "index_global_font_assets_on_normalized_name"
   end
 
   create_table "image_assets", force: :cascade do |t|

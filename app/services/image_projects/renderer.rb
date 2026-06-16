@@ -11,6 +11,7 @@ module ImageProjects
     DESIGN_IMAGE_WIDTH_RATIO = 0.6
     DESIGN_BODY_WIDTH_RATIO = 0.72
     DESIGN_BODY_LINE_HEIGHT_RATIO = 1.6
+    CENTERED_TITLE_MAX_COMPACT_LENGTH = 40
     FALLBACK_FONT_FAMILY = 'Arial, "Microsoft YaHei", "Microsoft JhengHei", "SimSun", "Noto Sans CJK SC", "Noto Sans CJK TC", sans-serif'
     BROWSER_PATHS = [
       ENV["CHROME_BIN"],
@@ -281,13 +282,16 @@ module ImageProjects
       white_space = truthy?(layer["autoWrap"]) ? "pre-wrap" : "pre"
       font_weight = truthy?(layer["bold"]) ? "700" : "400"
       font_style = truthy?(layer["italic"]) ? "italic" : "normal"
+      centered_title = centered_title_text?(layer, font_size, max_width)
+      deterministic_tracking = centered_title && letter_spacing.positive?
+      css_letter_spacing = deterministic_tracking ? 0 : letter_spacing
       style = [
-        position_style(layer, max_width, font_size * line_height),
-        "max-width: #{max_width}px",
+        position_style(layer, centered_title ? nil : max_width, font_size * line_height),
+        text_width_styles(max_width, centered_title),
         "font-family: #{font_family}",
         "font-size: #{font_size}px",
         "color: #{layer["color"].presence || default_text_color(task_config)}",
-        "letter-spacing: #{letter_spacing}px",
+        "letter-spacing: #{css_letter_spacing}px",
         "line-height: #{line_height}",
         "font-weight: #{font_weight}",
         "font-style: #{font_style}",
@@ -295,9 +299,104 @@ module ImageProjects
         "white-space: #{white_space}",
         "overflow-wrap: break-word",
         "opacity: #{number(layer["opacity"], 1)}"
-      ].join("; ")
+      ].flatten.join("; ")
+      content = text_layer_content_html(
+        layer["text"].to_s,
+        deterministic_tracking: deterministic_tracking,
+        letter_spacing: letter_spacing,
+        font_size: font_size
+      )
 
-      %(<div class="layer" style="#{html_attr(style)}">#{ERB::Util.html_escape(layer["text"].to_s)}</div>)
+      %(<div class="layer" style="#{html_attr(style)}">#{content}</div>)
+    end
+
+    def text_width_styles(max_width, centered_title)
+      return [ "width: fit-content", "max-width: #{max_width}px" ] if centered_title
+
+      [ "max-width: #{max_width}px" ]
+    end
+
+    def centered_title_text?(layer, font_size, max_width)
+      return false unless max_width.positive?
+      return false unless layer["x"].to_s == "center"
+      return false unless text_align(layer["align"]) == "center"
+
+      text = inline_plain_text(layer["text"])
+      return false if text.strip.blank? || text.match?(/\r|\n/)
+
+      compact_length = text.gsub(/\s+/, "").length
+      return false unless compact_length.between?(1, CENTERED_TITLE_MAX_COMPACT_LENGTH)
+
+      base_width, = estimated_single_line_text_metrics(text, font_size)
+      return false if base_width > max_width * 0.9
+
+      font_size >= 32 || layer["name"].to_s.match?(/title|heading|subtitle/i)
+    end
+
+    def text_layer_content_html(text, deterministic_tracking:, letter_spacing:, font_size:)
+      plain_text = inline_plain_text(text)
+      inline_content = inline_text_content_html(text)
+      return inline_content unless deterministic_tracking
+
+      units = tracked_title_units(inline_runs(text), letter_spacing, font_size)
+      return inline_content if units.empty?
+
+      graphemes = units.map do |unit|
+        styles = [ "display: inline-block" ]
+        styles << "font-weight: 700" if unit[:bold]
+        styles << "font-style: italic" if unit[:italic]
+        styles << "margin-right: #{unit[:gap_after]}px" if unit[:gap_after].positive?
+        %(<span class="tracked-grapheme" style="#{html_attr(styles.join("; "))}">#{ERB::Util.html_escape(unit[:text])}</span>)
+      end.join
+
+      %(<span class="tracked-title" aria-label="#{html_attr(plain_text)}">#{graphemes}</span>)
+    end
+
+    def inline_text_content_html(text)
+      return ERB::Util.html_escape(text.to_s) unless inline_markup?(text)
+
+      inline_runs(text).map do |run|
+        styles = []
+        styles << "font-weight: 700" if run[:bold]
+        styles << "font-style: italic" if run[:italic]
+        escaped = ERB::Util.html_escape(run[:text])
+
+        if styles.any?
+          %(<span style="#{html_attr(styles.join("; "))}">#{escaped}</span>)
+        else
+          %(<span>#{escaped}</span>)
+        end
+      end.join
+    end
+
+    def tracked_title_units(runs, letter_spacing, font_size)
+      units = []
+      pending_phrase_gap = false
+      phrase_gap = title_phrase_gap(font_size)
+
+      runs.each do |run|
+        run[:text].to_s.scan(/\X/).each do |grapheme|
+          if grapheme.match?(/\A\s+\z/)
+            pending_phrase_gap = true if units.any?
+            next
+          end
+
+          if units.any?
+            gap = letter_spacing
+            gap += phrase_gap if pending_phrase_gap
+            units.last[:gap_after] = gap
+          end
+
+          units << { text: grapheme, gap_after: 0.0, bold: run[:bold], italic: run[:italic] }
+          pending_phrase_gap = false
+        end
+      end
+
+      units
+    end
+
+    def title_phrase_gap(font_size)
+      font_size * 0.35
     end
 
     def text_letter_spacing(layer, font_size, max_width, dimensions)
@@ -307,7 +406,7 @@ module ImageProjects
       target_ratio = number(layer["targetTextWidthRatio"], 0.78).clamp(0.5, 0.95)
       target_width = dimensions[:canvas_width] * target_ratio
       target_width = [ target_width, max_width ].min if max_width.positive?
-      base_width, gaps = estimated_single_line_text_metrics(layer["text"].to_s, font_size)
+      base_width, gaps = estimated_single_line_text_metrics(layer["text"], font_size)
       return fallback if base_width <= 0 || gaps <= 0
 
       spacing = (target_width - base_width) / gaps
@@ -317,7 +416,7 @@ module ImageProjects
     end
 
     def estimated_single_line_text_metrics(text, font_size)
-      line = text.to_s.split(/\r?\n/).max_by(&:length).to_s
+      line = inline_plain_text(text).split(/\r?\n/).max_by(&:length).to_s
       chars = line.each_char.to_a
       return [ 0, 0 ] if chars.empty?
 
@@ -330,7 +429,7 @@ module ImageProjects
       warnings << match.warning if match.warning.present?
       return FALLBACK_FONT_FAMILY unless match.found? && match.asset.file.attached?
 
-      family = "uploaded_font_#{match.asset.id}"
+      family = css_font_family_for(match.asset)
       font_faces << <<~CSS
         @font-face {
           font-family: "#{family}";
@@ -339,6 +438,17 @@ module ImageProjects
         }
       CSS
       %("#{family}", #{FALLBACK_FONT_FAMILY})
+    end
+
+    def css_font_family_for(asset)
+      case asset
+      when GlobalFontAsset
+        "global_font_#{asset.id}"
+      when FontAsset
+        "project_font_#{asset.id}"
+      else
+        "uploaded_font_#{asset.id}"
+      end
     end
 
     def task_label(task_config)
@@ -424,7 +534,7 @@ module ImageProjects
     end
 
     def estimated_line_count(layer, font_size)
-      text = layer["text"].to_s
+      text = inline_plain_text(layer["text"])
       return [ text.lines.size, 1 ].max unless truthy?(layer["autoWrap"])
 
       max_width = number(layer["maxWidth"], 0)
@@ -461,7 +571,19 @@ module ImageProjects
     end
 
     def long_text?(text)
-      text.to_s.gsub(/\s+/, "").length > 60
+      inline_plain_text(text).gsub(/\s+/, "").length > 60
+    end
+
+    def inline_runs(text)
+      ImageProjects::InlineTextParser.parse(text)
+    end
+
+    def inline_plain_text(text)
+      ImageProjects::InlineTextParser.plain_text(text)
+    end
+
+    def inline_markup?(text)
+      ImageProjects::InlineTextParser.markup?(text)
     end
 
     def relative_offset(layer)
@@ -549,6 +671,10 @@ module ImageProjects
       case File.extname(name.to_s).downcase
       when ".otf"
         "opentype"
+      when ".woff"
+        "woff"
+      when ".woff2"
+        "woff2"
       else
         "truetype"
       end

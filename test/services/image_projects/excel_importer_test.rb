@@ -29,7 +29,7 @@ class ImageProjects::ExcelImporterTest < ActiveSupport::TestCase
     assert_equal 60, ImageProjects::ExcelParsers.parse_font_size("60")
   end
 
-  test "generic letter spacing notes create spread title mode but explicit percentages remain exact" do
+  test "letter spacing notes distinguish generic ratio percentage and explicit spread width" do
     generic = {
       "name" => "Title",
       "text" => "Title Copy",
@@ -39,15 +39,70 @@ class ImageProjects::ExcelImporterTest < ActiveSupport::TestCase
       "align" => "center"
     }
     explicit = generic.merge("letterSpacingRatio" => 0)
+    spread = generic.merge("letterSpacingRatio" => 0)
 
     ImageProjects::ExcelParsers.apply_notes_to_text_layer!(generic, "\u5C06\u5B57\u4F53\u95F4\u8DDD\u62C9\u5F00")
     ImageProjects::ExcelParsers.apply_notes_to_text_layer!(explicit, "\u5B57\u8DDD\u62C9\u5F00\u81F3\u5B57\u53F7\u768430%")
+    ImageProjects::ExcelParsers.apply_notes_to_text_layer!(spread, "spread text across 78% canvas width")
 
-    assert_equal "spread", generic["letterSpacingMode"]
-    assert_in_delta 0.78, generic["targetTextWidthRatio"], 0.001
-    assert_operator generic["letterSpacingRatio"], :>=, 0.55
+    assert_equal 0.3, generic["letterSpacingRatio"]
+    refute generic.key?("letterSpacingMode")
+    refute generic.key?("targetTextWidthRatio")
     assert_equal 0.3, explicit["letterSpacingRatio"]
     refute explicit.key?("letterSpacingMode")
+    assert_equal "spread", spread["letterSpacingMode"]
+    assert_in_delta 0.78, spread["targetTextWidthRatio"], 0.001
+    assert_equal 0.3, spread["letterSpacingRatio"]
+  end
+
+  test "Chinese partial bold note converts matching word to inline bold" do
+    layer = { "text" => "DESIGN HIGHLIGHTS", "bold" => false }
+
+    ImageProjects::ExcelParsers.apply_notes_to_text_layer!(layer, "其中 DESIGN 这个单词加粗")
+
+    assert_equal "**DESIGN** HIGHLIGHTS", layer["text"]
+    assert_equal false, layer["bold"]
+  end
+
+  test "English partial bold note converts matching word to inline bold" do
+    layer = { "text" => "DESIGN HIGHLIGHTS", "bold" => false }
+
+    ImageProjects::ExcelParsers.apply_notes_to_text_layer!(layer, "make DESIGN bold")
+
+    assert_equal "**DESIGN** HIGHLIGHTS", layer["text"]
+    assert_equal false, layer["bold"]
+  end
+
+  test "generic whole layer bold notes still set bold flag" do
+    all_bold = { "text" => "DESIGN HIGHLIGHTS", "bold" => false }
+    text_bold = { "text" => "DESIGN HIGHLIGHTS", "bold" => false }
+
+    ImageProjects::ExcelParsers.apply_notes_to_text_layer!(all_bold, "all bold")
+    ImageProjects::ExcelParsers.apply_notes_to_text_layer!(text_bold, "make the text bold")
+
+    assert_equal true, all_bold["bold"]
+    assert_equal "DESIGN HIGHLIGHTS", all_bold["text"]
+    assert_equal true, text_bold["bold"]
+    assert_equal "DESIGN HIGHLIGHTS", text_bold["text"]
+  end
+
+  test "partial bold note with missing phrase preserves text without whole layer bold" do
+    layer = { "text" => "DESIGN HIGHLIGHTS", "bold" => false }
+
+    ImageProjects::ExcelParsers.apply_notes_to_text_layer!(layer, "make MATERIAL bold")
+
+    assert_equal "DESIGN HIGHLIGHTS", layer["text"]
+    assert_equal false, layer["bold"]
+    assert_includes layer["notes"], "make MATERIAL bold"
+  end
+
+  test "partial bold note does not double wrap existing inline markup" do
+    layer = { "text" => "**DESIGN** HIGHLIGHTS", "bold" => false }
+
+    ImageProjects::ExcelParsers.apply_notes_to_text_layer!(layer, "DESIGN bold")
+
+    assert_equal "**DESIGN** HIGHLIGHTS", layer["text"]
+    assert_equal false, layer["bold"]
   end
 
   test "image reference parser extracts natural language references" do
@@ -153,11 +208,12 @@ class ImageProjects::ExcelImporterTest < ActiveSupport::TestCase
     assert_equal 200, p1_text["y"]
     assert_equal "GenWanMinTW-Light.ttf", p1_text["font"]
     assert_in_delta 80, p1_text["fontSize"], 0.01
-    assert_equal "spread", p1_text["letterSpacingMode"]
-    assert_in_delta 0.78, p1_text["targetTextWidthRatio"], 0.001
-    assert_operator p1_text["letterSpacingRatio"], :>=, 0.55
+    assert_equal 0.3, p1_text["letterSpacingRatio"]
+    refute p1_text.key?("letterSpacingMode")
+    refute p1_text.key?("targetTextWidthRatio")
     assert_equal "#F4EAD7", p1_text["color"]
     assert_equal "center", p1_text["align"]
+    assert_equal false, p1_text["autoWrap"]
 
     assert_equal "#FAFAF0", p2.dig("canvas", "backgroundColor")
     assert_equal "jpg", p2.dig("output", "format")
@@ -171,7 +227,7 @@ class ImageProjects::ExcelImporterTest < ActiveSupport::TestCase
     assert_equal 600, p2_image["height"]
     assert_equal "center", p2_image["x"]
     assert_equal 500, p2_image["y"]
-    assert_equal [ "设计亮点", "DESIGN HIGHLIGHTS", long_chinese_body ], p2_text_layers.map { |layer| layer["text"] }
+    assert_equal [ "设计亮点", "**DESIGN** HIGHLIGHTS", long_chinese_body ], p2_text_layers.map { |layer| layer["text"] }
 
     title, subtitle, body = p2_text_layers
     assert_equal 150, title["y"]
@@ -179,11 +235,13 @@ class ImageProjects::ExcelImporterTest < ActiveSupport::TestCase
     assert_equal 0.3, title["letterSpacingRatio"]
     refute title.key?("letterSpacingMode")
     assert_equal "center", title["align"]
+    assert_equal false, title["autoWrap"]
     assert_equal "layer1", subtitle["relativeTo"]
     assert_equal "below", subtitle["relativePosition"]
     refute subtitle.key?("relativeOffset")
     assert_in_delta 40, subtitle["fontSize"], 0.01
-    assert_equal true, subtitle["bold"]
+    assert_equal false, subtitle["bold"]
+    assert_equal false, subtitle["autoWrap"]
     assert_equal "layer0", body["relativeTo"]
     assert_equal "below", body["relativePosition"]
     assert_equal 120, body["relativeOffset"]
@@ -215,8 +273,28 @@ class ImageProjects::ExcelImporterTest < ActiveSupport::TestCase
     assert_equal "Premium Ceramic Cup", task.dig("layers", 1, "text")
     assert_equal 200, task.dig("layers", 1, "y")
     assert_equal 60, task.dig("layers", 1, "fontSize")
-    assert_equal "spread", task.dig("layers", 1, "letterSpacingMode")
-    assert_operator task.dig("layers", 1, "letterSpacingRatio"), :>=, 0.55
+    assert_equal 0.3, task.dig("layers", 1, "letterSpacingRatio")
+    assert_nil task.dig("layers", 1, "letterSpacingMode")
+    assert_nil task.dig("layers", 1, "targetTextWidthRatio")
+    assert_equal false, task.dig("layers", 1, "autoWrap")
+  ensure
+    File.delete(path) if path && File.exist?(path)
+  end
+
+  test "explicit spread to width instruction imports spread mode" do
+    project = ImageProject.create!(name: "Explicit Spread Import")
+    path = Rails.root.join("tmp", "explicit_spread_import_test.xlsx")
+    write_xlsx(path, [
+      [ "target name", "canvas size", "background color", "text content", "text position", "font size", "notes" ],
+      [ "SPREAD1", "1650 x 2480 px", "white", "Premium Ceramic Cup", "top 200 px", "60px", "spread text across 78% canvas width" ]
+    ])
+
+    task = ImageProjects::ExcelImporter.call(project, path).fetch("tasks").first
+    text = task.dig("layers", 0)
+
+    assert_equal "spread", text["letterSpacingMode"]
+    assert_in_delta 0.78, text["targetTextWidthRatio"], 0.001
+    assert_equal 0.3, text["letterSpacingRatio"]
   ensure
     File.delete(path) if path && File.exist?(path)
   end

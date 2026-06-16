@@ -1,7 +1,7 @@
 module ImageProjects
   class AssetNameNormalizer
     COMMON_IMAGE_EXTENSIONS = %w[.png .jpg .jpeg .webp].freeze
-    COMMON_FONT_EXTENSIONS = %w[.ttf .otf .ttc].freeze
+    COMMON_FONT_EXTENSIONS = %w[.ttf .otf .ttc .woff .woff2].freeze
 
     def self.full(name)
       name.to_s.strip.downcase

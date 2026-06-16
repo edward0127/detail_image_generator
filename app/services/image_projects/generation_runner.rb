@@ -13,6 +13,7 @@ module ImageProjects
     end
 
     def call
+      purge_previous_generation_jobs!
       job = project.image_generation_jobs.create!(status: "running", started_at: Time.current)
       project.update!(status: "generating", last_error: nil)
       job_warnings = []
@@ -50,6 +51,16 @@ module ImageProjects
     private
 
     attr_reader :project, :renderer, :task_indexes
+
+    def purge_previous_generation_jobs!
+      project.image_generation_jobs.includes(:zip_file_attachment, generated_images: { file_attachment: :blob }).find_each do |job|
+        job.generated_images.each do |generated|
+          generated.file.purge if generated.file.attached?
+        end
+        job.zip_file.purge if job.zip_file.attached?
+        job.destroy!
+      end
+    end
 
     def selected_task_pairs
       tasks = project.tasks

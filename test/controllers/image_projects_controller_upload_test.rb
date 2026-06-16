@@ -1,4 +1,5 @@
 require "test_helper"
+require "stringio"
 
 class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
   class ExplodingOriginalFilename
@@ -105,6 +106,91 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
     assert_equal [ "brand.ttf", "display.otf" ], project.font_assets.order(:name).pluck(:name)
   end
 
+  test "upload global fonts creates font library assets" do
+    project = create_project
+    upload = uploaded_file("brand.woff2", "font/woff2")
+
+    assert_difference -> { GlobalFontAsset.count }, 1 do
+      assert_no_difference -> { project.font_assets.count } do
+        post upload_global_fonts_image_project_path(project), params: {
+          fonts: [ upload ],
+          global_font_asset: { match_name: "ExcelBrand" }
+        }
+      end
+    end
+
+    assert_redirected_to image_project_path(project, task_index: 0, anchor: "font-library")
+    follow_redirect!
+    assert_includes response.body, "1 font(s) uploaded."
+    assert_includes response.body, "Uploaded fonts are available in the global Font Library."
+
+    asset = GlobalFontAsset.last
+    assert_equal "brand.woff2", asset.name
+    assert_equal "ExcelBrand", asset.match_name
+    assert asset.file.attached?
+  end
+
+  test "uploaded global font becomes available in text layer dropdown" do
+    project = create_project
+    task = task_config("P1")
+    task["layers"] = [ text_layer_config.merge("font" => "") ]
+    project.update_config!(
+      "projectName" => "Uploads",
+      "tasks" => [ task ]
+    )
+
+    post upload_global_fonts_image_project_path(project), params: {
+      fonts: [ uploaded_file("GlobalBrand.ttf", "font/ttf") ]
+    }
+
+    follow_redirect!
+    assert_select "select[name='layers[0][font]'] option[value='GlobalBrand.ttf']", text: "GlobalBrand.ttf (Global)"
+  end
+
+  test "text layer font dropdown lists global project and missing current fonts" do
+    project = create_project
+    create_global_font_asset("GlobalBrand.ttf")
+    create_project_font_asset(project, "LegacyProject.ttf", alias_name: "LegacyProject")
+    task = task_config("P1")
+    task["layers"] = [ text_layer_config.merge("font" => "MissingCurrent.ttf") ]
+    project.update_config!(
+      "projectName" => "Uploads",
+      "tasks" => [ task ]
+    )
+
+    get image_project_path(project)
+
+    assert_response :success
+    assert_select "input[name='layers[0][font]']", count: 0
+    assert_select "select[name='layers[0][font]']" do
+      assert_select "option[value='MissingCurrent.ttf'][selected='selected']", text: "Missing/current: MissingCurrent.ttf (Missing)"
+      assert_select "option[value='GlobalBrand.ttf']", text: "GlobalBrand.ttf (Global)"
+      assert_select "option[value='LegacyProject.ttf']", text: "LegacyProject.ttf (Project)"
+    end
+    assert_select "a[href='#global-font-upload-form'][data-open-font-library='true']", text: "Upload new font"
+    assert_select ".font-field .field-help", text: "Upload fonts once to the global library, then select them here."
+    assert_select "details#font-library-manager"
+    assert_select "form#global-font-upload-form[data-upload-kind='global-fonts']"
+    assert_select "input#global-font-file-input[data-global-font-file-input='true']"
+  end
+
+  test "global font update and delete redirect back to font library anchor" do
+    project = create_project
+    asset = create_global_font_asset("GlobalBrand.ttf")
+
+    patch update_global_font_asset_image_project_path(project, asset_id: asset.id), params: {
+      global_font_asset: { match_name: "UpdatedBrand" }
+    }
+
+    assert_redirected_to image_project_path(project, task_index: 0, anchor: "font-library")
+    assert_equal "UpdatedBrand", asset.reload.match_name
+
+    delete global_font_asset_image_project_path(project, asset_id: asset.id)
+
+    assert_redirected_to image_project_path(project, task_index: 0, anchor: "font-library")
+    refute GlobalFontAsset.exists?(asset.id)
+  end
+
   test "project page shows imported task names workflow actions and collapsed advanced sections" do
     project = create_project
     project.update_config!(
@@ -123,26 +209,262 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
     assert_select ".task-title", text: "P2"
     assert_includes response.body, "Import Excel"
     assert_includes response.body, "Upload Images"
-    assert_includes response.body, "Upload Fonts"
-    assert_select "form.workflow-form[data-upload-reminder='true']", count: 3
+    assert_select ".workflow-step h2", text: "Upload Fonts", count: 0
+    assert_select ".workflow-step .step-label", text: "Step 1"
+    assert_select ".workflow-step .step-label", text: "Step 2"
+    assert_select ".workflow-step .step-label", text: "Step 3"
+    assert_select ".workflow-step .step-label", text: "Step 4", count: 0
+    assert_select ".workflow-step .step-label", text: "Step 5", count: 0
+    assert_select ".workflow-panel form.workflow-form[data-upload-reminder='true']", count: 2
     assert_select "form[data-upload-kind='excel'][data-upload-pending-label='Import Excel Now']"
     assert_select "form[data-upload-kind='images'][data-upload-action='Upload'][data-upload-singular='Image'][data-upload-plural='Images']"
-    assert_select "form[data-upload-kind='fonts'][data-upload-action='Upload'][data-upload-singular='Font'][data-upload-plural='Fonts']"
+    assert_select "form[data-upload-kind='fonts']", count: 0
+    assert_select "details#font-library-manager"
+    assert_select "form#global-font-upload-form[data-upload-kind='global-fonts'][data-upload-action='Upload'][data-upload-singular='Font'][data-upload-plural='Fonts']"
+    assert_select "input#global-font-file-input[data-global-font-file-input='true']"
     assert_select ".upload-reminder-message[hidden][data-upload-reminder-message]", text: "File selected but not uploaded yet.", count: 3
-    assert_includes response.body, "Preview P1"
-    assert_includes response.body, "Generate P1"
-    assert_includes response.body, "Generate All Images"
+    assert_includes response.body, "Preview Selected Image"
+    assert_includes response.body, "Download ZIP (All Images)"
+    refute_includes response.body, "Generate P1"
+    refute_includes response.body, "Generate All Images"
+    assert_select "form#task-editor-form"
+    assert_select "form#task-editor-form button[type='submit'][data-processing-label='Saving...']", text: "Save Changes"
+    assert_select ".workflow-actions form", count: 0
+    assert_select "button[type='submit'][form='task-editor-form'][name='after_save_action'][value='preview_current'][data-processing-label='Generating preview...']", text: "Preview Selected Image"
+    assert_select "button[type='submit'][form='task-editor-form'][name='after_save_action'][value='download_zip'][data-processing-label='Generating images and preparing ZIP...']", text: "Download ZIP (All Images)"
+    assert_select "button[type='submit'][form='task-editor-form'][name='after_save_action'][value='generate_current']", count: 0
+    assert_select "button[type='submit'][form='task-editor-form'][name='after_save_action'][value='generate_all']", count: 0
     assert_includes response.body, "Selected Image: <strong>P1</strong>"
     assert_includes response.body, "Preview is scaled for browser display."
     assert_includes response.body, "Final output size: <strong>1650 x 2480</strong>"
     assert_select "select[name='task[layoutMode]'] option[selected='selected'][value='strict']", text: "Strict Excel values"
-    assert_includes response.body, "Imported 2 tasks:"
+    assert_select ".task-title", text: "P1"
+    assert_select ".task-title", text: "P2"
     assert_includes response.body, "Danger Zone"
     assert_includes response.body, "Delete this project and all uploaded/generated files? This cannot be undone."
     assert_select "details.advanced-panel summary", text: "Advanced JSON"
     assert_select "details.advanced-panel[open]", count: 0
     assert_select "details.layers-panel summary", text: /Fine-tune Layers/
     assert_select "details.layers-panel[open]", count: 0
+  end
+
+  test "blank project disables preview and download actions with helper text" do
+    project = create_project
+
+    get image_project_path(project)
+
+    assert_response :success
+    assert_select "button[name='after_save_action'][value='preview_current'][disabled='disabled']", text: "Preview Selected Image"
+    assert_select "button[name='after_save_action'][value='download_zip'][disabled='disabled']", text: "Download ZIP (All Images)"
+    assert_includes response.body, "Add at least one layer before previewing."
+    assert_includes response.body, "Import Excel or add at least one renderable layer before downloading the ZIP."
+  end
+
+  test "blank project preview is rejected server side" do
+    project = create_project
+    renderer_factory = lambda { |_project| flunk "blank preview should not render" }
+
+    with_singleton_method_stub(ImageProjects::Renderer, :new, renderer_factory) do
+      post preview_image_project_path(project)
+    end
+
+    assert_redirected_to image_project_path(project, task_index: 0)
+    refute project.reload.preview_file.attached?
+    follow_redirect!
+    assert_includes response.body, "Please import Excel or add layers before previewing."
+  end
+
+  test "blank project download is rejected server side without generation output" do
+    project = create_project
+    runner = lambda { |_project, **_kwargs| flunk "blank download should not generate" }
+
+    assert_no_difference -> { project.image_generation_jobs.count } do
+      with_singleton_method_stub(ImageProjects::GenerationRunner, :call, runner) do
+        get download_zip_image_project_path(project)
+      end
+    end
+
+    assert_redirected_to image_project_path(project, task_index: 0)
+    follow_redirect!
+    assert_includes response.body, "Please import Excel or add layers before downloading the ZIP."
+  end
+
+  test "preview autosave with no renderable layers is rejected server side" do
+    project = create_project
+    renderer_factory = lambda { |_project| flunk "blank preview autosave should not render" }
+
+    with_singleton_method_stub(ImageProjects::Renderer, :new, renderer_factory) do
+      patch image_project_path(project), params: editor_params(
+        layer: text_layer_params("font" => "", "text" => ""),
+        after_save_action: "preview_current"
+      )
+    end
+
+    assert_redirected_to image_project_path(project, task_index: 0)
+    refute project.reload.preview_file.attached?
+    follow_redirect!
+    assert_includes response.body, "Please import Excel or add renderable layers before previewing."
+  end
+
+  test "download autosave with no renderable layers is rejected server side" do
+    project = create_project
+    runner = lambda { |_project, **_kwargs| flunk "blank download autosave should not generate" }
+
+    assert_no_difference -> { project.image_generation_jobs.count } do
+      with_singleton_method_stub(ImageProjects::GenerationRunner, :call, runner) do
+        patch image_project_path(project), params: editor_params(
+          layer: text_layer_params("font" => "", "text" => ""),
+          after_save_action: "download_zip"
+        )
+      end
+    end
+
+    assert_redirected_to image_project_path(project, task_index: 0)
+    follow_redirect!
+    assert_includes response.body, "Please import Excel or add layers before downloading the ZIP."
+  end
+
+  test "text only renderable task enables preview and download actions" do
+    project = create_project
+    task = task_config("Text Only")
+    task["layers"] = [ text_layer_config.merge("font" => "", "text" => "Renderable text") ]
+    project.update_config!("projectName" => "Uploads", "tasks" => [ task ])
+
+    get image_project_path(project)
+
+    assert_response :success
+    assert_select "button[name='after_save_action'][value='preview_current'][disabled]", count: 0
+    assert_select "button[name='after_save_action'][value='download_zip'][disabled]", count: 0
+  end
+
+  test "image layer with missing source disables preview and download and is rejected server side" do
+    project = create_project
+    task = task_config("P2")
+    task["layers"] = [
+      {
+        "id" => "layer0",
+        "name" => "Main Image",
+        "type" => "image",
+        "imageName" => "P2",
+        "width" => 800,
+        "height" => 800,
+        "x" => "center",
+        "y" => 0,
+        "fit" => "contain",
+        "opacity" => 1
+      }
+    ]
+    project.update_config!("projectName" => "Uploads", "tasks" => [ task ])
+
+    get image_project_path(project)
+
+    assert_response :success
+    assert_select "button[name='after_save_action'][value='preview_current'][disabled='disabled']"
+    assert_select "button[name='after_save_action'][value='download_zip'][disabled='disabled']"
+    assert_includes response.body, "Upload the required source images before previewing: P2."
+    assert_includes response.body, "Upload the required source images before downloading the ZIP: P2."
+
+    post preview_image_project_path(project)
+    assert_redirected_to image_project_path(project, task_index: 0)
+    follow_redirect!
+    assert_includes response.body, "Please upload the required source images before previewing."
+  end
+
+  test "image layer with attached matching source enables preview and download actions" do
+    project = create_project
+    attach_image_asset(project, "p2.png", alias_name: "P2")
+    task = task_config("P2")
+    task["layers"] = [
+      {
+        "id" => "layer0",
+        "name" => "Main Image",
+        "type" => "image",
+        "imageName" => "P2",
+        "width" => 800,
+        "height" => 800,
+        "x" => "center",
+        "y" => 0,
+        "fit" => "contain",
+        "opacity" => 1
+      }
+    ]
+    project.update_config!("projectName" => "Uploads", "tasks" => [ task ])
+
+    get image_project_path(project)
+
+    assert_response :success
+    assert_select "button[name='after_save_action'][value='preview_current'][disabled]", count: 0
+    assert_select "button[name='after_save_action'][value='download_zip'][disabled]", count: 0
+  end
+
+  test "project page explains letter spacing and toggles target text width by mode" do
+    project = create_project
+    ratio_task = task_config("P1")
+    ratio_task["layers"] = [ text_layer_config ]
+    spread_task = task_config("P2")
+    spread_layer = text_layer_config.merge(
+      "letterSpacingMode" => "spread",
+      "targetTextWidthRatio" => 0.78
+    )
+    spread_task["layers"] = [ spread_layer ]
+    project.update_config!(
+      "projectName" => "Uploads",
+      "tasks" => [ ratio_task, spread_task ]
+    )
+
+    get image_project_path(project, task_index: 0)
+
+    assert_response :success
+    assert_includes response.body, "0.3 means 30% of font size. With font size 80, 0.3 = 24px."
+    assert_includes response.body, "Large values such as 0.65 create very wide tracking."
+    assert_select "select[name='layers[0][letterSpacingMode]'][data-letter-spacing-mode-source='true'][data-action='change->conditional-sections#update']"
+    assert_select "#layer-0-target-text-width-ratio-field[data-letter-spacing-mode-section='spread']"
+    assert_select "#layer-0-target-text-width-ratio-field[hidden]"
+    assert_select "#layer-0-target-text-width-ratio-field input[name='layers[0][targetTextWidthRatio]'][disabled='disabled']"
+
+    get image_project_path(project, task_index: 1)
+
+    assert_response :success
+    assert_select "#layer-0-target-text-width-ratio-field[hidden]", count: 0
+    assert_select "#layer-0-target-text-width-ratio-field input[name='layers[0][targetTextWidthRatio]'][disabled]", count: 0
+    assert_select "#layer-0-target-text-width-ratio-field input[name='layers[0][targetTextWidthRatio]'][value='0.78']"
+  end
+
+  test "project page renders layer type sections for image and text layers" do
+    project = create_project
+    task = task_config("P1")
+    task["layers"] = [
+      {
+        "id" => "layer0",
+        "name" => "Main Image",
+        "type" => "image",
+        "imageName" => "p1",
+        "width" => 800,
+        "height" => 900,
+        "x" => "center",
+        "y" => 0,
+        "fit" => "contain",
+        "opacity" => 1
+      },
+      text_layer_config
+    ]
+    project.update_config!(
+      "projectName" => "Uploads",
+      "tasks" => [ task ]
+    )
+
+    get image_project_path(project)
+
+    assert_response :success
+    assert_select "article.layer-card[data-controller='conditional-sections'][data-conditional-sections-section-attribute-value='layer-type-section']", count: 2
+    assert_select "select[name='layers[0][type]'][data-layer-type-source='true'][data-action='change->conditional-sections#update'] option[selected='selected'][value='image']"
+    assert_select "label[data-layer-type-section='image'] input[name='layers[0][imageName]'][value='p1']"
+    assert_select "label[data-layer-type-section='text'][hidden] textarea[name='layers[0][text]']"
+    assert_select "select[name='layers[1][type]'][data-layer-type-source='true'] option[selected='selected'][value='text']"
+    assert_select "label[data-layer-type-section='text'] textarea[name='layers[1][text]']", text: "Original title"
+    assert_select "label[data-layer-type-section='image'][hidden] input[name='layers[1][imageName]']"
+    assert_includes response.body, "Inline formatting supported: **bold** and *italic*. Example: **DESIGN** HIGHLIGHTS"
+    assert_includes response.body, "Whole-layer Bold affects all text. For only one word, use **word** in Text Content."
   end
 
   test "project page shows readiness checklist for matched and missing assets" do
@@ -154,6 +476,7 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
       width: 1650,
       height: 2480
     )
+    create_global_font_asset("GenWanMinTW-Light.ttf", match_name: "GenWanMinTW-Light")
     p1 = task_config("P1")
     p1["layers"] = [
       { "id" => "layer0", "type" => "image", "imageName" => "p1" },
@@ -173,16 +496,39 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
     get image_project_path(project)
 
     assert_response :success
-    assert_includes response.body, "Imported 2 tasks:"
+    assert_select ".task-title", text: "P1"
+    assert_select ".task-title", text: "P2"
     assert_includes response.body, "p1 matched to p1.png"
     assert_includes response.body, "P2 missing"
-    assert_includes response.body, "Font &quot;GenWanMinTW-Light.ttf&quot; was not uploaded. A fallback font was used, so the generated image may not visually match the expected design."
+    assert_includes response.body, "GenWanMinTW-Light.ttf matched to GenWanMinTW-Light.ttf"
+    refute_includes response.body, "Font &quot;GenWanMinTW-Light.ttf&quot; was not uploaded."
     assert_includes response.body, "Font &quot;AlibabaPuHuiTi-3-55-Regular&quot; was not uploaded. A fallback font was used, so the generated image may not visually match the expected design."
-    assert_includes response.body, "Why does my output look different?"
-    assert_includes response.body, "upload the correct font files"
-    assert_includes response.body, "check Excel Match Name"
-    assert_includes response.body, "preview is scaled"
-    assert_includes response.body, "design-friendly mode may adjust visual layout"
+    assert_includes response.body, "Font Library"
+    assert_includes response.body, "Required Fonts"
+  end
+
+  test "fileless global font record does not clear readiness warning" do
+    project = create_project
+    GlobalFontAsset.create!(
+      name: "FilelessBrand.ttf",
+      match_name: "FilelessBrand",
+      normalized_name: ImageProjects::AssetNameNormalizer.extensionless("FilelessBrand.ttf")
+    )
+    task = task_config("P1")
+    task["layers"] = [
+      { "id" => "layer1", "type" => "text", "font" => "FilelessBrand.ttf" }
+    ]
+    project.update_config!(
+      "projectName" => "Uploads",
+      "tasks" => [ task ]
+    )
+
+    get image_project_path(project)
+
+    assert_response :success
+    assert_includes response.body, "Font &quot;FilelessBrand.ttf&quot; was not uploaded."
+    refute_includes response.body, "FilelessBrand.ttf matched to FilelessBrand.ttf"
+    assert_select "details#font-library-manager[open]"
   end
 
   test "saving editor preserves spread title settings and applies P1 off-white default color" do
@@ -247,6 +593,98 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
     assert_equal "#F4EAD7", title["color"]
     assert_equal "spread", title["letterSpacingMode"]
     assert_in_delta 0.78, title["targetTextWidthRatio"], 0.001
+  end
+
+  test "saving editor clears spread title settings when ratio mode is submitted" do
+    project = create_project
+    task = task_config("P1")
+    task["layers"] = [
+      {
+        "id" => "layer0",
+        "name" => "Title",
+        "type" => "text",
+        "text" => "Original title",
+        "font" => "Brand.ttf",
+        "fontSize" => 80,
+        "color" => "#111111",
+        "letterSpacingRatio" => 0.4,
+        "letterSpacingMode" => "spread",
+        "targetTextWidthRatio" => 0.78,
+        "lineHeightRatio" => 1.2,
+        "maxWidth" => 1200,
+        "autoWrap" => true,
+        "bold" => false,
+        "italic" => false,
+        "x" => "center",
+        "y" => 200,
+        "align" => "center",
+        "opacity" => 1,
+        "notes" => ""
+      }
+    ]
+    project.update_config!(
+      "projectName" => "Uploads",
+      "tasks" => [ task ]
+    )
+
+    patch image_project_path(project), params: editor_params(
+      layer: text_layer_params(
+        "letterSpacingRatio" => "0.12",
+        "letterSpacingMode" => "",
+        "targetTextWidthRatio" => "0.78"
+      )
+    )
+
+    assert_redirected_to image_project_path(project, task_index: 0)
+    title = project.reload.config_hash.dig("tasks", 0, "layers", 0)
+    refute title.key?("letterSpacingMode")
+    refute title.key?("targetTextWidthRatio")
+    assert_in_delta 0.12, title["letterSpacingRatio"], 0.001
+  end
+
+  test "saving editor without after save action does not preview or generate" do
+    project = create_project
+    task = task_config("P1")
+    task["layers"] = [ text_layer_config ]
+    project.update_config!(
+      "projectName" => "Uploads",
+      "tasks" => [ task ]
+    )
+
+    renderer_factory = lambda do |*_args|
+      flunk "save-only update should not instantiate preview renderer"
+    end
+    runner = lambda do |*_args, **_kwargs|
+      flunk "save-only update should not run generation"
+    end
+
+    with_singleton_method_stub(ImageProjects::Renderer, :new, renderer_factory) do
+      with_singleton_method_stub(ImageProjects::GenerationRunner, :call, runner) do
+        patch image_project_path(project), params: editor_params(
+          layer: text_layer_params("text" => "Saved only")
+        )
+      end
+    end
+
+    assert_redirected_to image_project_path(project, task_index: 0)
+    assert_equal "Saved only", project.reload.config_hash.dig("tasks", 0, "layers", 0, "text")
+  end
+
+  test "saving editor preserves inline markup" do
+    project = create_project
+    task = task_config("P1")
+    task["layers"] = [ text_layer_config.merge("font" => "") ]
+    project.update_config!(
+      "projectName" => "Uploads",
+      "tasks" => [ task ]
+    )
+
+    patch image_project_path(project), params: editor_params(
+      layer: text_layer_params("font" => "", "text" => "**DESIGN** HIGHLIGHTS")
+    )
+
+    assert_redirected_to image_project_path(project, task_index: 0)
+    assert_equal "**DESIGN** HIGHLIGHTS", project.reload.config_hash.dig("tasks", 0, "layers", 0, "text")
   end
 
   test "project index shows delete action" do
@@ -378,6 +816,30 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
     ImageProject.create!(name: "Uploads")
   end
 
+  def create_global_font_asset(name, match_name: nil)
+    asset = GlobalFontAsset.create!(
+      name: name,
+      match_name: match_name,
+      normalized_name: ImageProjects::AssetNameNormalizer.extensionless(name)
+    )
+    asset.file.attach(io: StringIO.new("font data"), filename: name, content_type: font_content_type(name))
+    asset
+  end
+
+  def create_project_font_asset(project, name, alias_name: nil)
+    asset = project.font_assets.create!(
+      name: name,
+      alias_name: alias_name,
+      normalized_name: ImageProjects::AssetNameNormalizer.extensionless(name)
+    )
+    asset.file.attach(io: StringIO.new("font data"), filename: name, content_type: font_content_type(name))
+    asset
+  end
+
+  def font_content_type(name)
+    "font/#{File.extname(name).delete(".")}"
+  end
+
   def uploaded_file(filename, content_type)
     tempfile = Tempfile.new([ File.basename(filename, ".*"), File.extname(filename) ])
     tempfile.binmode
@@ -388,6 +850,18 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
     Rack::Test::UploadedFile.new(tempfile.path, content_type, true, original_filename: filename)
   end
 
+  def attach_image_asset(project, name, alias_name: nil)
+    asset = project.image_assets.create!(
+      name: name,
+      alias_name: alias_name,
+      normalized_name: ImageProjects::AssetNameNormalizer.extensionless(name),
+      width: 1,
+      height: 1
+    )
+    asset.file.attach(io: StringIO.new("image data"), filename: name, content_type: "image/png")
+    asset
+  end
+
   def task_config(target_name)
     {
       "targetName" => target_name,
@@ -395,5 +869,72 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
       "output" => { "width" => 1650, "height" => 2480, "format" => "png" },
       "layers" => []
     }
+  end
+
+  def editor_params(layer:, after_save_action: nil)
+    params = {
+      task_index: 0,
+      image_project: { name: "Uploads" },
+      task: {
+        targetName: "P1",
+        layoutMode: "strict",
+        canvas: { width: "1650", height: "2480", backgroundColor: "#FAFAF0", transparent: "0" },
+        output: { width: "1650", height: "2480", format: "png" }
+      },
+      layers: {
+        "0" => layer
+      }
+    }
+    params[:after_save_action] = after_save_action if after_save_action
+    params
+  end
+
+  def text_layer_config
+    {
+      "id" => "layer0",
+      "name" => "Title",
+      "type" => "text",
+      "text" => "Original title",
+      "font" => "Brand.ttf",
+      "fontSize" => 80,
+      "color" => "#111111",
+      "letterSpacingRatio" => 0.4,
+      "lineHeightRatio" => 1.2,
+      "maxWidth" => 1200,
+      "autoWrap" => true,
+      "bold" => false,
+      "italic" => false,
+      "x" => "center",
+      "y" => 200,
+      "align" => "center",
+      "opacity" => 1,
+      "notes" => ""
+    }
+  end
+
+  def text_layer_params(overrides = {})
+    text_layer_config.merge(
+      "fontSize" => "80",
+      "letterSpacingRatio" => "0.4",
+      "lineHeightRatio" => "1.2",
+      "maxWidth" => "1200",
+      "autoWrap" => "1",
+      "bold" => "0",
+      "italic" => "0",
+      "y" => "200",
+      "opacity" => "1",
+      "letterSpacingMode" => "",
+      "targetTextWidthRatio" => "0.78"
+    ).merge(overrides)
+  end
+
+  def with_singleton_method_stub(object, method_name, replacement)
+    original_method = object.method(method_name)
+    object.define_singleton_method(method_name, &replacement)
+    yield
+  ensure
+    object.define_singleton_method(method_name) do |*args, **kwargs, &block|
+      original_method.call(*args, **kwargs, &block)
+    end
   end
 end

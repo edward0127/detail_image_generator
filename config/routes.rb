@@ -3,6 +3,7 @@ Rails.application.routes.draw do
     member do
       post :upload_images
       post :upload_fonts
+      post :upload_global_fonts
       post :import_excel
       post :preview
       post :generate_current
@@ -23,6 +24,8 @@ Rails.application.routes.draw do
       delete "image_assets/:asset_id", to: "image_projects#destroy_image_asset", as: :image_asset
       patch "font_assets/:asset_id", to: "image_projects#update_font_asset", as: :update_font_asset
       delete "font_assets/:asset_id", to: "image_projects#destroy_font_asset", as: :font_asset
+      patch "global_font_assets/:asset_id", to: "image_projects#update_global_font_asset", as: :update_global_font_asset
+      delete "global_font_assets/:asset_id", to: "image_projects#destroy_global_font_asset", as: :global_font_asset
     end
   end
 

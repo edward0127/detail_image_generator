@@ -16,6 +16,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -162,6 +166,34 @@ input[type="submit"]:hover {
   text-decoration: none;
 }
 
+.button.is-processing,
+button.is-processing,
+input[type="submit"].is-processing {
+  gap: 8px;
+  cursor: wait;
+  opacity: 0.88;
+  pointer-events: none;
+}
+
+.button.is-processing::before,
+button.is-processing::before {
+  content: "";
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: button-processing-spin 0.75s linear infinite;
+}
+
+@keyframes button-processing-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .button.primary,
 input[type="submit"].primary {
   border-color: var(--primary);
@@ -180,7 +212,10 @@ input[type="submit"].primary:hover {
   color: var(--success);
 }
 
-.button.disabled {
+.button.disabled,
+.button:disabled,
+button:disabled,
+input[type="submit"]:disabled {
   opacity: 0.55;
   cursor: not-allowed;
   pointer-events: none;
@@ -223,7 +258,7 @@ input[type="submit"].primary:hover {
 
 .workflow-panel {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0;
   margin-bottom: 16px;
   background: var(--panel);
@@ -261,6 +296,10 @@ input[type="submit"].primary:hover {
   align-items: flex-start;
   gap: 8px;
   overflow-wrap: anywhere;
+}
+
+.compact-list {
+  margin-top: 6px;
 }
 
 .readiness-icon {
@@ -391,6 +430,15 @@ input[type="submit"].primary:hover {
   .workflow-form.upload-pending button[type="submit"] {
     animation: none;
   }
+
+  .button.is-processing::before,
+  button.is-processing::before {
+    animation: none;
+  }
+
+  .font-library-highlight {
+    animation: none;
+  }
 }
 
 .workflow-actions .button_to {
@@ -401,6 +449,15 @@ input[type="submit"].primary:hover {
 .workflow-actions button,
 .workflow-actions input[type="submit"] {
   width: 100%;
+}
+
+.workflow-action-item {
+  display: grid;
+  gap: 4px;
+}
+
+.workflow-disabled-message {
+  margin: 0;
 }
 
 .action-grid {
@@ -586,6 +643,27 @@ input[type="submit"].primary:hover {
   gap: 12px;
 }
 
+.font-field {
+  min-width: 0;
+}
+
+.font-picker-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.font-picker-row select {
+  flex: 1 1 260px;
+  min-width: 220px;
+}
+
+.font-picker-row .button {
+  flex: 0 0 auto;
+  min-height: 38px;
+}
+
 .span-2 {
   grid-column: span 2;
 }
@@ -593,6 +671,7 @@ input[type="submit"].primary:hover {
 .check-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding-top: 22px;
 }
@@ -605,6 +684,11 @@ input[type="submit"].primary:hover {
   margin: 0;
   color: var(--text);
   font-size: 13px;
+}
+
+.check-row .field-help {
+  flex: 1 0 100%;
+  margin-top: 0;
 }
 
 .compact-check {
@@ -644,6 +728,48 @@ input[type="submit"].primary:hover {
   display: grid;
   gap: 12px;
   margin-top: 14px;
+}
+
+.sidebar-section,
+.compact-details {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.font-library-panel h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.compact-details summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.compact-upload-form {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.font-library-highlight {
+  outline: 3px solid rgba(31, 111, 91, 0.35);
+  outline-offset: 3px;
+  background: #f2fbf6;
+  animation: font-library-highlight 1.8s ease-out;
+}
+
+@keyframes font-library-highlight {
+  0% {
+    outline-color: rgba(31, 111, 91, 0.65);
+    background: #e8f7ef;
+  }
+
+  100% {
+    outline-color: rgba(31, 111, 91, 0);
+    background: transparent;
+  }
 }
 
 .compact-heading {
@@ -941,6 +1067,14 @@ input[type="submit"].primary:hover {
 
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .font-picker-row select {
+    min-width: 0;
+  }
+
+  .font-picker-row .button {
+    width: 100%;
   }
 
   .span-2 {

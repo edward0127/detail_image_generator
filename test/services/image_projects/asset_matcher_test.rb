@@ -1,4 +1,5 @@
 require "test_helper"
+require "stringio"
 
 class ImageProjects::AssetMatcherTest < ActiveSupport::TestCase
   test "font matcher supports full file name matching" do
@@ -114,11 +115,13 @@ class ImageProjects::AssetMatcherTest < ActiveSupport::TestCase
   private
 
   def create_font_asset(project, name, alias_name: nil)
-    project.font_assets.create!(
+    asset = project.font_assets.create!(
       name: name,
       alias_name: alias_name,
       normalized_name: ImageProjects::AssetNameNormalizer.extensionless(name)
     )
+    asset.file.attach(io: StringIO.new("font data"), filename: name, content_type: "font/#{File.extname(name).delete(".")}")
+    asset
   end
 
   def create_image_asset(project, name, alias_name: nil)
