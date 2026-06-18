@@ -2,63 +2,118 @@ require "zip"
 
 module ImageProjects
   class GenerationRunner
-    def self.call(project, task_indexes: nil, input_signature: nil, generation_scope: nil)
-      new(project, task_indexes: task_indexes, input_signature: input_signature, generation_scope: generation_scope).call
+    def self.call(project = nil, task_indexes: nil, input_signature: nil, generation_scope: nil, job: nil)
+      project ||= job&.image_project
+      new(project, task_indexes: task_indexes, input_signature: input_signature, generation_scope: generation_scope, job: job).call
     end
 
-    def initialize(project, task_indexes: nil, input_signature: nil, generation_scope: nil)
+    def initialize(project, task_indexes: nil, input_signature: nil, generation_scope: nil, job: nil)
       @project = project
+      raise ArgumentError, "project is required" unless @project
+
+      @job = job
       @renderer = Renderer.new(project)
-      @task_indexes = task_indexes
-      @generation_scope = generation_scope.presence || default_generation_scope
-      @input_signature = input_signature.presence || default_input_signature
+      @task_indexes = task_indexes.nil? ? task_indexes_from_job : task_indexes
+      @generation_scope = generation_scope.presence || @job&.generation_scope.presence || default_generation_scope
+      @input_signature = input_signature.presence || @job&.input_signature.presence || default_input_signature
     end
 
     def call
-      job = project.image_generation_jobs.create!(
+      preload_dependencies
+
+      generation_job = job || create_generation_job!
+      return generation_job if generation_job.downloadable?
+
+      started_clock = monotonic_time
+      signature_prefix = input_signature.to_s.first(12)
+      Rails.logger.info(
+        "ZIP generation job started image_generation_job_id=#{generation_job.id} " \
+        "scope=#{generation_scope} signature=#{signature_prefix}"
+      )
+
+      generation_job.generated_images.destroy_all if generation_job.generated_images.exists?
+      generation_job.update!(
         status: "running",
         started_at: Time.current,
+        finished_at: nil,
+        warnings_list: [],
+        errors_list: [],
         generation_scope: generation_scope,
         input_signature: input_signature,
         task_indexes_json: task_indexes_json
       )
       project.update!(status: "generating", last_error: nil)
+
       job_warnings = []
       job_errors = []
       tasks = selected_task_pairs
       raise "No tasks were selected for generation." if tasks.blank?
 
-      tasks.each do |task, index|
-        result = renderer.render_final(task)
-        generated = persist_result(job, task, index, result)
-        job_warnings << { "targetName" => generated.target_name, "warnings" => result.warnings } if result.warnings.any?
-        job_errors << { "targetName" => generated.target_name, "errors" => result.errors } if result.errors.any?
+      with_renderer_batch do
+        tasks.each do |task, index|
+          render_started_clock = monotonic_time
+          result = renderer.render_final(task)
+          generated = persist_result(generation_job, task, index, result)
+          job_warnings << { "targetName" => generated.target_name, "warnings" => result.warnings } if result.warnings.any?
+          job_errors << { "targetName" => generated.target_name, "errors" => result.errors } if result.errors.any?
+          generation_job.touch
+          Rails.logger.info(
+            "ZIP generation rendered task image_generation_job_id=#{generation_job.id} " \
+            "task_index=#{index} target=#{generated.target_name.inspect} " \
+            "duration=#{elapsed_seconds(render_started_clock)}s warnings=#{result.warnings.size} errors=#{result.errors.size}"
+          )
+        end
       end
 
-      attach_zip(job)
+      attach_started_clock = monotonic_time
+      attach_zip(generation_job)
+      Rails.logger.info(
+        "ZIP generation attached archive image_generation_job_id=#{generation_job.id} " \
+        "duration=#{elapsed_seconds(attach_started_clock)}s generated_images=#{generation_job.generated_images.count}"
+      )
+
       status = job_errors.any? ? "completed_with_errors" : "completed"
-      job.update!(
+      generation_job.update!(
         status: status,
         finished_at: Time.current,
         warnings_list: job_warnings,
         errors_list: job_errors
       )
       project.update!(status: status, last_error: job_errors.presence&.to_json)
-      cleanup_old_all_tasks_zip_jobs!(job)
-      job
+      cleanup_old_all_tasks_zip_jobs!(generation_job)
+      Rails.logger.info(
+        "ZIP generation job completed image_generation_job_id=#{generation_job.id} " \
+        "status=#{status} duration=#{elapsed_seconds(started_clock)}s generated_images=#{generation_job.generated_images.count} " \
+        "signature=#{signature_prefix}"
+      )
+      generation_job
     rescue StandardError => error
-      job&.update!(
+      failed_job = defined?(generation_job) ? generation_job : job
+      failed_job&.update!(
         status: "failed",
         finished_at: Time.current,
-        errors_list: [ error.message ]
+        errors_list: Array(failed_job.errors_list) + [ error.message ]
       )
       project.update!(status: "failed", last_error: error.message)
+      Rails.logger.error(
+        "ZIP generation job failed image_generation_job_id=#{failed_job&.id || "unknown"} " \
+        "duration=#{defined?(started_clock) ? elapsed_seconds(started_clock) : "unknown"}s error=#{error.class}: #{error.message}"
+      )
       raise
     end
 
     private
 
-    attr_reader :project, :renderer, :task_indexes, :input_signature, :generation_scope
+    attr_reader :project, :renderer, :task_indexes, :input_signature, :generation_scope, :job
+
+    def create_generation_job!
+      project.image_generation_jobs.create!(
+        status: "queued",
+        generation_scope: generation_scope,
+        input_signature: input_signature,
+        task_indexes_json: task_indexes_json
+      )
+    end
 
     def default_generation_scope
       task_indexes.nil? ? ImageGenerationJob::ALL_TASKS_ZIP_SCOPE : ImageGenerationJob::SELECTED_TASKS_ZIP_SCOPE
@@ -76,6 +131,13 @@ module ImageProjects
       JSON.generate(Array(task_indexes).map(&:to_i))
     end
 
+    def task_indexes_from_job
+      parsed = JSON.parse(job.task_indexes_json.presence || "null") if job&.task_indexes_json.present?
+      parsed if parsed.is_a?(Array)
+    rescue JSON::ParserError
+      nil
+    end
+
     def selected_task_pairs
       tasks = project.tasks
       indexes = task_indexes.nil? ? (0...tasks.size).to_a : Array(task_indexes).map(&:to_i)
@@ -84,6 +146,25 @@ module ImageProjects
         task = tasks[index]
         task.present? ? [ task, index ] : nil
       end
+    end
+
+    def with_renderer_batch(&block)
+      if renderer.respond_to?(:with_reused_browser)
+        renderer.with_reused_browser(&block)
+      else
+        yield
+      end
+    end
+
+    def preload_dependencies
+      ActiveRecord::Associations::Preloader.new(
+        records: [ project ],
+        associations: [
+          { image_assets: { file_attachment: :blob } },
+          { font_assets: { file_attachment: :blob } }
+        ]
+      ).call
+      GlobalFontAsset.with_attached_file.load
     end
 
     def persist_result(job, task, index, result)
@@ -143,6 +224,8 @@ module ImageProjects
       project.image_generation_jobs
         .where.not(id: current_job.id)
         .where("generation_scope = ? OR generation_scope IS NULL", ImageGenerationJob::ALL_TASKS_ZIP_SCOPE)
+        .where(status: ImageGenerationJob::COMPLETED_CACHE_STATUSES)
+        .where("created_at < ?", current_job.created_at)
         .find_each { |job| purge_generation_job!(job) }
     end
 
@@ -178,6 +261,14 @@ module ImageProjects
       else
         "image/jpeg"
       end
+    end
+
+    def monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    def elapsed_seconds(started_clock)
+      (monotonic_time - started_clock).round(3)
     end
   end
 end

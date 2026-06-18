@@ -37,7 +37,7 @@ module ImageProjects
     attr_reader :project
 
     def assets
-      @assets ||= project.image_assets.to_a
+      @assets ||= project.image_assets.with_attached_file.to_a
     end
 
     def matching_assets(&block)

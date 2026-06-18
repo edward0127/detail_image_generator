@@ -1,0 +1,91 @@
+<% content_for :title, "Clear Project Data" %>
+
+<main class="page narrow">
+  <header class="page-header compact">
+    <div>
+      <h1>Clear Project Data</h1>
+      <p>Reset this project to fresh content while keeping the Font Library.</p>
+    </div>
+    <%= link_to "Cancel", @cancel_clear_path, class: "button" %>
+  </header>
+
+  <% if notice.present? %>
+    <div class="flash notice"><%= notice %></div>
+  <% end %>
+  <% if alert.present? %>
+    <div class="flash alert"><%= alert %></div>
+  <% end %>
+
+  <section class="panel delete-confirmation-panel">
+    <div class="flash alert deletion-warning">
+      <strong>This action cannot be undone.</strong>
+      <p>Clearing project data removes imported Excel data, uploaded images, previews, generated images, and ZIPs. Font Library assets are kept.</p>
+    </div>
+
+    <table class="data-table delete-summary-table">
+      <tbody>
+        <tr>
+          <th scope="row">Project name</th>
+          <td><%= @clear_summary[:project_name] %></td>
+        </tr>
+        <tr>
+          <th scope="row">Status</th>
+          <td><span class="status"><%= @clear_summary[:status] %></span></td>
+        </tr>
+        <tr>
+          <th scope="row">Number of tasks</th>
+          <td><%= @clear_summary[:task_count] %></td>
+        </tr>
+        <tr>
+          <th scope="row">Uploaded image assets count</th>
+          <td><%= @clear_summary[:image_asset_count] %></td>
+        </tr>
+        <tr>
+          <th scope="row">Cached task previews count</th>
+          <td><%= @clear_summary[:task_preview_count] %></td>
+        </tr>
+        <tr>
+          <th scope="row">Preview generation jobs count</th>
+          <td><%= @clear_summary[:preview_generation_job_count] %></td>
+        </tr>
+        <tr>
+          <th scope="row">Image generation jobs / generated images count</th>
+          <td><%= pluralize(@clear_summary[:generation_job_count], "job") %> / <%= pluralize(@clear_summary[:generated_image_count], "generated image") %></td>
+        </tr>
+        <tr>
+          <th scope="row">ZIP attachments count</th>
+          <td><%= @clear_summary[:zip_file_count] %></td>
+        </tr>
+        <tr>
+          <th scope="row">Legacy preview attachments count</th>
+          <td><%= @clear_summary[:legacy_preview_file_count] %></td>
+        </tr>
+        <tr>
+          <th scope="row">Project font assets kept</th>
+          <td><%= @clear_summary[:project_font_asset_count] %></td>
+        </tr>
+        <tr>
+          <th scope="row">Global Font Library assets kept</th>
+          <td><%= @clear_summary[:global_font_asset_count] %></td>
+        </tr>
+        <tr>
+          <th scope="row">Last updated time</th>
+          <td><%= l(@clear_summary[:last_updated_at], format: :short) %></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <%= form_with url: clear_project_data_image_project_path(@image_project), method: :delete, class: "stack deletion-confirmation-form" do %>
+      <%= hidden_field_tag :return_to, params[:return_to] if params[:return_to].present? %>
+      <label>
+        <span>Type CLEAR to confirm</span>
+        <%= text_field_tag :confirm_clear, params[:confirm_clear], autocomplete: "off" %>
+      </label>
+
+      <div class="confirmation-actions">
+        <%= link_to "Cancel", @cancel_clear_path, class: "button" %>
+        <%= submit_tag "Clear project data", class: "button danger" %>
+      </div>
+    <% end %>
+  </section>
+</main>

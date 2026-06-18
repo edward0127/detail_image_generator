@@ -69,11 +69,22 @@ module ImageProjects
     def task_payload(task, index)
       {
         "index" => index,
-        "task_config" => task,
+        "task_config" => render_relevant_task_config(task),
         "effective_output" => effective_output_for(task),
         "image_dependencies" => image_dependencies_for(task),
         "font_dependencies" => font_dependencies_for(task)
       }
+    end
+
+    def render_relevant_task_config(task)
+      copy = task.deep_dup
+      Array(copy["layers"]).each do |layer|
+        layer.delete("notes")
+        layer.delete("previousRelativeTo")
+        layer.delete("previousRelativePosition")
+        layer.delete("previousRelativeOffset")
+      end
+      copy
     end
 
     def effective_output_for(task)

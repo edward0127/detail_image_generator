@@ -58,6 +58,21 @@ class ImageProjects::RenderInputSignatureTest < ActiveSupport::TestCase
     refute_equal old_signature, ImageProjects::RenderInputSignature.full_zip(project.reload)
   end
 
+  test "preview signature ignores non-rendering notes and previous relative backups" do
+    project = text_project([ "P1" ])
+    old_signature = ImageProjects::RenderInputSignature.preview_task(project, 0)
+
+    config = project.config_hash
+    layer = config.dig("tasks", 0, "layers", 0)
+    layer["notes"] = "Edited import note that should not affect rendering"
+    layer["previousRelativeTo"] = "layer0"
+    layer["previousRelativePosition"] = "below"
+    layer["previousRelativeOffset"] = 24
+    project.update_config!(config)
+
+    assert_equal old_signature, ImageProjects::RenderInputSignature.preview_task(project.reload, 0)
+  end
+
   private
 
   def text_project(names, font: "")

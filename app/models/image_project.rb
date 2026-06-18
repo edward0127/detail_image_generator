@@ -2,6 +2,7 @@ class ImageProject < ApplicationRecord
   has_many :image_assets, dependent: :destroy
   has_many :font_assets, dependent: :destroy
   has_many :image_generation_jobs, dependent: :destroy
+  has_many :preview_generation_jobs, dependent: :destroy
   has_many :task_previews, dependent: :destroy
   has_one_attached :preview_file
 
@@ -31,9 +32,26 @@ class ImageProject < ApplicationRecord
   def latest_completed_zip_job(input_signature:, generation_scope: ImageGenerationJob::ALL_TASKS_ZIP_SCOPE)
     image_generation_jobs
       .with_attached_zip_file
-      .where(generation_scope: generation_scope, input_signature: input_signature, status: ImageGenerationJob::COMPLETED_CACHE_STATUSES)
+      .for_zip_cache(input_signature: input_signature, generation_scope: generation_scope)
+      .completed_cache
       .order(created_at: :desc)
       .detect { |job| job.zip_file.attached? }
+  end
+
+  def latest_active_zip_job(input_signature:, generation_scope: ImageGenerationJob::ALL_TASKS_ZIP_SCOPE)
+    image_generation_jobs
+      .for_zip_cache(input_signature: input_signature, generation_scope: generation_scope)
+      .active
+      .order(created_at: :desc)
+      .first
+  end
+
+  def latest_failed_zip_job(input_signature:, generation_scope: ImageGenerationJob::ALL_TASKS_ZIP_SCOPE)
+    image_generation_jobs
+      .for_zip_cache(input_signature: input_signature, generation_scope: generation_scope)
+      .where(status: "failed")
+      .order(updated_at: :desc)
+      .first
   end
 
   private

@@ -3,6 +3,7 @@ services:
     image: ghcr.io/edward0127/detail_image_generator:latest
     container_name: detail_image_generator
     restart: unless-stopped
+    init: true
     security_opt:
       - seccomp=unconfined
     ports:

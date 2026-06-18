@@ -295,6 +295,24 @@ class ImageProjects::RendererHtmlTest < ActiveSupport::TestCase
     assert_in_delta 0.84, style.match(/letter-spacing: ([\d.]+)px/)[1].to_f, 0.001
   end
 
+  test "relative layers resolve y from reference bottom plus offset" do
+    project = ImageProject.create!(name: "Renderer HTML")
+    task = {
+      "targetName" => "Relative",
+      "layoutMode" => "strict",
+      "canvas" => { "width" => 600, "height" => 800, "backgroundColor" => "#FFFFFF", "transparent" => false },
+      "output" => { "width" => 600, "height" => 800, "format" => "png" },
+      "layers" => [
+        { "id" => "layer0", "type" => "image", "imageName" => "hero", "width" => 300, "height" => 220, "x" => "center", "y" => 100 },
+        { "id" => "layer1", "type" => "text", "text" => "Body", "fontSize" => 40, "lineHeightRatio" => 1.2, "maxWidth" => 400, "autoWrap" => false, "x" => "center", "y" => 999, "relativeTo" => "layer0", "relativePosition" => "below", "relativeOffset" => 120 }
+      ]
+    }
+
+    resolved = ImageProjects::Renderer.new(project).resolved_layers_for(task)
+
+    assert_equal 440, resolved[1]["y"]
+  end
+
   test "design-friendly mode scales small centered ecommerce image before resolving body offset" do
     project = ImageProject.create!(name: "Renderer HTML")
     task = {

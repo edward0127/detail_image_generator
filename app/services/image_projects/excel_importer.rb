@@ -260,7 +260,7 @@ module ImageProjects
         layer["relativeOffset"] = position["relativeOffset"] if position["relativeOffset"].present?
         layer["notes"] = position["notes"] if position["notes"].present?
 
-        ExcelParsers.apply_notes_to_text_layer!(layer, notes)
+        ExcelParsers.apply_notes_to_text_layer!(layer, notes, warnings: warnings)
         task["layers"] << layer
       end
     end

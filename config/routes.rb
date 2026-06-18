@@ -6,10 +6,16 @@ Rails.application.routes.draw do
       post :upload_global_fonts
       post :import_excel
       post :preview
+      match :preview_all, via: %i[post patch]
       post :generate_current
       post :generate
       get :download_zip
+      get "generation_jobs/:job_id/status", to: "image_projects#generation_job_status", as: :generation_job_status
+      get "generation_jobs/:job_id/download", to: "image_projects#download_generation_job", as: :generation_job_download
+      get "preview_generation_jobs/:job_id/status", to: "image_projects#preview_generation_job_status", as: :preview_generation_job_status
       get :delete_confirmation
+      get :clear_data_confirmation
+      delete :clear_project_data
 
       post :add_task
       post :duplicate_task

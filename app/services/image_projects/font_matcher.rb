@@ -32,11 +32,11 @@ module ImageProjects
     attr_reader :project
 
     def project_assets
-      @project_assets ||= project.font_assets.to_a
+      @project_assets ||= project.font_assets.with_attached_file.to_a
     end
 
     def global_assets
-      @global_assets ||= GlobalFontAsset.all.to_a
+      @global_assets ||= GlobalFontAsset.with_attached_file.to_a
     end
 
     def match_assets(assets, query)

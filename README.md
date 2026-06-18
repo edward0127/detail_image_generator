@@ -133,3 +133,31 @@ docker build -t detail_image_generator:test .
 ```
 
 Do not start the Rails server as part of deployment verification.
+
+## Background Rendering And Local Queue Notes
+
+Production uses Solid Queue in Puma (`SOLID_QUEUE_IN_PUMA=true`) with the
+`image_generation` queue configured for one worker thread. ZIP generation and
+preview rendering both use that queue because both can launch Chromium.
+
+Generation behavior:
+
+- ZIP generation runs in the background. The completed ZIP download endpoint
+  only downloads a finished ZIP; GET requests do not start rendering.
+- Preview Selected Image, Preview All Images, and Save and Generate Preview
+  return immediately when a current `TaskPreview` cache entry exists.
+- If a preview cache entry is missing or stale, preview rendering is queued in
+  the background and the browser polls job status.
+- Save only, import, image upload, and font upload remain normal
+  request/response flows.
+
+Local `rails s` may use the Rails async Active Job adapter unless Solid Queue is
+enabled locally. Check the active adapter with:
+
+```sh
+bin/rails runner "puts Rails.env; puts ActiveJob::Base.queue_adapter.class.name; puts Rails.application.config.active_job.queue_adapter.inspect"
+```
+
+For local parity with production, enable Solid Queue in Puma with the same Puma
+plugin flag used in production after your local queue database is migrated.
+Simple local development does not require a separate worker container.

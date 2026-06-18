@@ -29,6 +29,11 @@ class ImageProjectsController < ApplicationController
     @cancel_delete_path = delete_cancel_path
   end
 
+  def clear_data_confirmation
+    @clear_summary = project_data_clear_summary
+    @cancel_clear_path = clear_cancel_path
+  end
+
   def destroy
     unless delete_confirmation_matches?
       @delete_summary = project_delete_summary
@@ -47,6 +52,22 @@ class ImageProjectsController < ApplicationController
     redirect_to destination, alert: "Project delete failed: #{error.message}"
   end
 
+  def clear_project_data
+    unless clear_confirmation_matches?
+      @clear_summary = project_data_clear_summary
+      @cancel_clear_path = clear_cancel_path
+      flash.now[:alert] = "Type CLEAR to confirm clearing project data."
+      render :clear_data_confirmation, status: :unprocessable_entity
+      return
+    end
+
+    ImageProjects::ProjectDataResetter.call(@image_project)
+
+    redirect_to image_project_path(@image_project), notice: "Project data cleared. Font Library was kept."
+  rescue StandardError => error
+    redirect_to clear_data_confirmation_image_project_path(@image_project), alert: "Clear project data failed: #{error.message}"
+  end
+
   def update
     saved = false
 
@@ -60,10 +81,10 @@ class ImageProjectsController < ApplicationController
 
     respond_after_editor_save
   rescue JSON::ParserError => error
-    redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: "Invalid JSON: #{error.message}"
+    respond_to_action_error(error, fallback_prefix: "Invalid JSON")
   rescue StandardError => error
     alert = saved ? "#{after_save_failure_prefix}: #{error.message}" : "Configuration save failed: #{error.message}"
-    redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: alert
+    respond_to_action_error(error, fallback_prefix: alert, include_error_message: false)
   end
 
   def upload_images
@@ -133,28 +154,37 @@ class ImageProjectsController < ApplicationController
     @image_project.reload
     index = selected_task_index
     ensure_task_previewable!(index)
-    result = preview_current_task!(index)
-    redirect_to image_project_path(@image_project, task_index: index),
-                notice: result[:notice]
+    result = preview_generation_for_selected_task!(index)
+    respond_to_preview_start(result, task_index: index, saved: params.key?(:task) || params.key?(:layers) || params.key?(:image_project))
   rescue StandardError => error
-    redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: "Preview failed: #{error.message}"
+    respond_to_action_error(error, fallback_prefix: "Preview failed")
+  end
+
+  def preview_all
+    save_request_config_if_present!
+    @image_project.reload
+    result = preview_generation_for_all_tasks!
+    respond_to_preview_all_start(result, saved: params.key?(:task) || params.key?(:layers) || params.key?(:image_project))
+  rescue JSON::ParserError => error
+    respond_to_action_error(error, fallback_prefix: "Invalid JSON")
+  rescue StandardError => error
+    respond_to_action_error(error, fallback_prefix: "Preview all failed")
   end
 
   def generate
+    save_request_config_if_present!
+    @image_project.reload
     ensure_project_downloadable!
-    job = generate_all_images!
-    redirect_to image_project_path(@image_project, task_index: selected_task_index),
-                notice: generation_notice(job)
+    result = zip_generation_for_current_inputs!
+    respond_to_zip_start(result, saved: params.key?(:task) || params.key?(:layers) || params.key?(:image_project))
   rescue StandardError => error
-    redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: "Generation failed: #{error.message}"
+    respond_to_action_error(error, fallback_prefix: "Generation failed")
   end
 
   def generate_current
     index = selected_task_index
-    ensure_task_previewable!(index)
-    job = generate_current_image!(index)
     redirect_to image_project_path(@image_project, task_index: index),
-                notice: current_generation_notice(job)
+                alert: "Current-image final generation is no longer run in the request. Use Generate ZIP (All Images) to start background generation."
   rescue StandardError => error
     redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: "Current task generation failed: #{error.message}"
   end
@@ -163,11 +193,51 @@ class ImageProjectsController < ApplicationController
     save_request_config_if_present!
     @image_project.reload
     ensure_project_downloadable!
-    job, = zip_job_for_current_inputs!
+    input_signature = ImageProjects::RenderInputSignature.full_zip(@image_project)
+    cached_job = @image_project.latest_completed_zip_job(input_signature: input_signature)
 
-    send_zip_file(job)
+    if cached_job
+      Rails.logger.info(
+        "Cached ZIP reused image_project_id=#{@image_project.id} image_generation_job_id=#{cached_job.id} " \
+        "signature=#{input_signature.first(12)}"
+      )
+      redirect_to_zip_file(cached_job)
+    else
+      active_job = active_zip_job_for_signature(input_signature)
+      message = if active_job
+                  "ZIP generation is #{active_job.status}. You can leave this page and come back later."
+                else
+                  "ZIP is not ready yet. Save the project and use Generate ZIP (All Images) to start background generation."
+                end
+      redirect_to image_project_path(@image_project, task_index: selected_task_index), notice: message
+    end
   rescue StandardError => error
     redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: error.message
+  end
+
+  def generation_job_status
+    job = @image_project.image_generation_jobs.find(params[:job_id])
+    refresh_stale_running_job!(job)
+
+    render json: generation_job_status_payload(job.reload)
+  end
+
+  def preview_generation_job_status
+    job = @image_project.preview_generation_jobs.find(params[:job_id])
+    refresh_stale_running_preview_job!(job)
+
+    render json: preview_generation_job_status_payload(job.reload)
+  end
+
+  def download_generation_job
+    job = @image_project.image_generation_jobs.find(params[:job_id])
+
+    if job.downloadable?
+      redirect_to_zip_file(job)
+    else
+      redirect_to image_project_path(@image_project, task_index: selected_task_index),
+                  alert: "ZIP is not ready yet. Current status: #{job.status}."
+    end
   end
 
   def add_task
@@ -345,7 +415,18 @@ class ImageProjectsController < ApplicationController
     params[:confirm_project_name].to_s == @image_project.name.to_s
   end
 
+  def clear_confirmation_matches?
+    params[:confirm_clear].to_s == "CLEAR"
+  end
+
   def delete_cancel_path
+    path = params[:return_to].to_s
+    return path if local_path?(path)
+
+    image_project_path(@image_project)
+  end
+
+  def clear_cancel_path
     path = params[:return_to].to_s
     return path if local_path?(path)
 
@@ -364,7 +445,26 @@ class ImageProjectsController < ApplicationController
       image_asset_count: @image_project.image_assets.count,
       task_preview_count: @image_project.task_previews.count,
       generation_job_count: @image_project.image_generation_jobs.count,
+      preview_generation_job_count: @image_project.preview_generation_jobs.count,
       zip_file_count: project_zip_file_count,
+      last_updated_at: @image_project.updated_at
+    }
+  end
+
+  def project_data_clear_summary
+    {
+      project_name: @image_project.name,
+      status: @image_project.status,
+      task_count: @image_project.tasks.size,
+      image_asset_count: @image_project.image_assets.count,
+      task_preview_count: @image_project.task_previews.count,
+      preview_generation_job_count: @image_project.preview_generation_jobs.count,
+      generation_job_count: @image_project.image_generation_jobs.count,
+      generated_image_count: project_generated_image_count,
+      zip_file_count: project_zip_file_count,
+      legacy_preview_file_count: @image_project.preview_file.attached? ? 1 : 0,
+      project_font_asset_count: @image_project.font_assets.count,
+      global_font_asset_count: GlobalFontAsset.count,
       last_updated_at: @image_project.updated_at
     }
   end
@@ -377,6 +477,10 @@ class ImageProjectsController < ApplicationController
         name: "zip_file"
       )
       .count
+  end
+
+  def project_generated_image_count
+    GeneratedImage.where(image_generation_job_id: @image_project.image_generation_jobs.select(:id)).count
   end
 
   def load_editor_state
@@ -397,8 +501,12 @@ class ImageProjectsController < ApplicationController
     @readiness_summary = readiness_summary_for(@tasks)
     @selected_task_preview_readiness = task_preview_readiness(@task)
     @selected_task_previewable = @selected_task_preview_readiness[:ready]
+    @project_preview_all_readiness = project_preview_all_readiness(@tasks)
+    @project_preview_all_available = @project_preview_all_readiness[:ready]
     @project_download_readiness = project_download_readiness(@tasks)
     @project_downloadable = @project_download_readiness[:ready]
+    load_zip_generation_state
+    load_preview_generation_state
   end
 
   def respond_after_editor_save
@@ -406,28 +514,23 @@ class ImageProjectsController < ApplicationController
     when "preview_current"
       index = selected_task_index
       ensure_task_previewable!(index)
-      result = preview_current_task!(
-        index,
-        generated_message: "Configuration saved. Preview generated.",
-        cached_message: "Configuration saved. Preview is already up to date."
-      )
-      redirect_to image_project_path(@image_project, task_index: index), notice: result[:notice]
+      result = preview_generation_for_selected_task!(index)
+      respond_to_preview_start(result, task_index: index, saved: true)
+    when "preview_all"
+      result = preview_generation_for_all_tasks!
+      respond_to_preview_all_start(result, saved: true)
     when "download_zip"
       ensure_project_downloadable!
-      job, cached = zip_job_for_current_inputs!
-      flash[:notice] = cached ? "Configuration saved. Reused cached ZIP." : "Configuration saved. ZIP generated."
-      send_zip_file(job)
+      result = zip_generation_for_current_inputs!
+      respond_to_zip_start(result, saved: true)
     when "generate_current"
       index = selected_task_index
-      ensure_task_previewable!(index)
-      job = generate_current_image!(index)
       redirect_to image_project_path(@image_project, task_index: index),
-                  notice: "Configuration saved. #{current_generation_notice(job)}"
+                  alert: "Configuration saved. Current-image final generation is no longer run in the request. Use Generate ZIP (All Images) to start background generation."
     when "generate_all"
       ensure_project_downloadable!
-      job = generate_all_images!
-      redirect_to image_project_path(@image_project, task_index: selected_task_index),
-                  notice: "Configuration saved. #{generation_notice(job)}"
+      result = zip_generation_for_current_inputs!
+      respond_to_zip_start(result, saved: true)
     else
       redirect_to image_project_path(@image_project, task_index: selected_task_index), notice: "Configuration saved."
     end
@@ -437,6 +540,8 @@ class ImageProjectsController < ApplicationController
     case params[:after_save_action].to_s
     when "preview_current"
       "Configuration saved, but preview failed"
+    when "preview_all"
+      "Configuration saved, but preview all failed"
     when "download_zip"
       "Configuration saved, but ZIP generation failed"
     when "generate_current"
@@ -448,88 +553,156 @@ class ImageProjectsController < ApplicationController
     end
   end
 
-  def render_preview_for_task!(index)
-    task = @image_project.tasks[index]
-    raise "No task exists at index #{index}." if task.blank?
-
-    input_signature = preview_signature_for_task(index)
-    result = ImageProjects::Renderer.new(@image_project).render_preview(task, scale: 0.5)
-    attach_preview_result!(result, task, index, input_signature)
-    result
+  def preview_generation_for_selected_task!(index)
+    ImageProjects::PreviewGenerationRunner.prepare_selected(@image_project, task_index: index)
   end
 
-  def preview_current_task!(index, generated_message: "Preview generated.", cached_message: "Preview is already up to date.")
-    cached_preview = current_task_preview_for(index)
-    return { notice: cached_message, cached: true } if cached_preview
-
-    result = render_preview_for_task!(index)
-    { notice: preview_notice(result, generated_message), cached: false, result: result }
+  def preview_generation_for_all_tasks!
+    ImageProjects::PreviewGenerationRunner.prepare_all(@image_project)
   end
 
-  def attach_preview_result!(result, task, index, input_signature)
-    return unless result.path.present? && File.exist?(result.path)
-
-    begin
-      File.open(result.path, "rb") do |file|
-        preview = @image_project.task_previews.find_or_initialize_by(
-          task_index: index,
-          input_signature: input_signature
-        )
-        preview.assign_attributes(
-          task_name: task_display_name(task, index),
-          width: result.width,
-          height: result.height,
-          format: result.format
-        )
-        preview.save! if preview.new_record? || preview.changed?
-        preview.file.purge if preview.file.attached?
-        preview.file.attach(
-          io: file,
-          filename: "preview-#{result.filename}",
-          content_type: mime_type(result.format)
-        )
-        cleanup_stale_task_previews!(index, keep: preview)
-      end
-    ensure
-      ImageProjects::TempfileManager.delete(result.path)
+  def respond_to_preview_start(result, task_index:, saved: false)
+    if json_request?
+      render json: preview_start_payload(result, saved: saved), status: :ok
+    else
+      redirect_to image_project_path(@image_project, task_index: task_index),
+                  notice: prefixed_action_message(result[:message], saved: saved)
     end
   end
 
-  def cleanup_stale_task_previews!(index, keep:)
-    @image_project.task_previews.where(task_index: index).where.not(id: keep.id).find_each do |preview|
-      preview.file.purge if preview.file.attached?
-      preview.destroy!
+  def respond_to_preview_all_start(result, saved: false)
+    status = result[:state] == :no_previewable ? :unprocessable_entity : :ok
+    if json_request?
+      render json: preview_all_start_payload(result, saved: saved), status: status
+    else
+      flash_key = result[:state] == :no_previewable ? :alert : :notice
+      redirect_to image_project_path(@image_project, task_index: selected_task_index),
+                  flash_key => prefixed_action_message(result[:message], saved: saved)
     end
   end
 
-  def preview_notice(result, success_message)
-    messages = [ success_message ]
-    messages << "Warnings: #{result.warnings.join(" | ")}" if result.warnings.any?
-    messages << "Errors: #{result.errors.join(" | ")}" if result.errors.any?
-    messages.join(" ")
+  def respond_to_zip_start(result, saved: false)
+    if json_request?
+      render json: zip_generation_start_payload(result, saved: saved), status: :ok
+    elsif result[:state] == :cached
+      flash[:notice] = prefixed_action_message("Reused cached ZIP.", saved: saved)
+      redirect_to_zip_file(result[:job])
+    else
+      redirect_to image_project_path(@image_project, task_index: selected_task_index),
+                  notice: prefixed_action_message(zip_generation_notice(result), saved: saved)
+    end
   end
 
-  def generate_all_images!(input_signature: nil)
-    ImageProjects::GenerationRunner.call(
-      @image_project,
-      input_signature: input_signature,
-      generation_scope: ImageGenerationJob::ALL_TASKS_ZIP_SCOPE
-    )
+  def respond_to_action_error(error, fallback_prefix:, include_error_message: true)
+    message = include_error_message ? "#{fallback_prefix}: #{error.message}" : fallback_prefix
+    if json_request?
+      render json: { state: "failed_validation", message: message, errors: [ error.message ] }, status: :unprocessable_entity
+    else
+      redirect_to image_project_path(@image_project, task_index: selected_task_index), alert: message
+    end
   end
 
-  def generate_current_image!(index)
-    task = @image_project.tasks[index]
-    raise "No task exists at index #{index}." if task.blank?
-
-    ImageProjects::GenerationRunner.call(@image_project, task_indexes: [ index ])
+  def preview_start_payload(result, saved: false)
+    preview = result[:preview]
+    job = result[:job]
+    {
+      state: result[:state].to_s,
+      status: job&.status || "completed",
+      scope: job&.scope || PreviewGenerationJob::SELECTED_TASK_PREVIEW_SCOPE,
+      job_id: job&.id,
+      task_indexes: [ result[:task_index] ].compact,
+      input_signature: result[:input_signature],
+      status_url: (preview_generation_job_status_image_project_path(@image_project, job_id: job.id, task_index: result[:task_index]) if job),
+      total_count: job&.total_count || 1,
+      previewable_count: job&.previewable_count || 1,
+      generated_count: job&.generated_count.to_i,
+      reused_count: job&.reused_count.to_i,
+      skipped_count: job&.skipped_count.to_i,
+      failed_count: job&.failed_count.to_i,
+      preview_url: (rails_blob_path(preview.file, only_path: true) if preview&.file&.attached?),
+      downloadable: false,
+      message: prefixed_action_message(result[:message], saved: saved)
+    }.compact
   end
 
-  def zip_job_for_current_inputs!
+  def preview_all_start_payload(result, saved: false)
+    job = result[:job]
+    {
+      state: result[:state].to_s,
+      status: job&.status || (result[:state] == :cached ? "completed" : result[:state].to_s),
+      scope: PreviewGenerationJob::ALL_TASK_PREVIEWS_SCOPE,
+      job_id: job&.id,
+      task_indexes: job&.task_indexes || [],
+      input_signature: result[:input_signature] || job&.input_signature,
+      status_url: (preview_generation_job_status_image_project_path(@image_project, job_id: job.id, task_index: selected_task_index) if job),
+      total_count: result[:total_count].to_i,
+      previewable_count: result[:previewable_count].to_i,
+      generated_count: result[:generated_count].to_i,
+      reused_count: result[:reused_count].to_i,
+      skipped_count: result[:skipped_count].to_i,
+      failed_count: result[:failed_count].to_i,
+      message: prefixed_action_message(result[:message], saved: saved)
+    }.compact
+  end
+
+  def zip_generation_start_payload(result, saved: false)
+    job = result[:job]
+    {
+      state: result[:state].to_s,
+      status: job.status,
+      job_id: job.id,
+      generation_scope: job.generation_scope,
+      input_signature: result[:input_signature],
+      status_url: generation_job_status_image_project_path(@image_project, job_id: job.id),
+      generated_image_count: job.generated_images.count,
+      total_task_count: zip_total_task_count(job),
+      downloadable: job.downloadable?,
+      download_url: (generation_job_download_image_project_path(@image_project, job_id: job.id) if job.downloadable?),
+      message: prefixed_action_message(result[:state] == :cached ? "Reused cached ZIP." : zip_generation_notice(result), saved: saved)
+    }.compact
+  end
+
+  def prefixed_action_message(message, saved:)
+    saved ? "Configuration saved. #{message}" : message
+  end
+
+  def json_request?
+    request.format.json? || request.get_header("HTTP_ACCEPT").to_s.include?("application/json")
+  end
+
+  def zip_generation_for_current_inputs!
     input_signature = ImageProjects::RenderInputSignature.full_zip(@image_project)
-    cached_job = @image_project.latest_completed_zip_job(input_signature: input_signature)
-    return [ cached_job, true ] if cached_job
+    result = nil
 
-    [ generate_all_images!(input_signature: input_signature), false ]
+    @image_project.with_lock do
+      cached_job = @image_project.latest_completed_zip_job(input_signature: input_signature)
+      if cached_job
+        Rails.logger.info(
+          "Cached ZIP reused image_project_id=#{@image_project.id} image_generation_job_id=#{cached_job.id} " \
+          "signature=#{input_signature.first(12)}"
+        )
+        result = { job: cached_job, state: :cached, enqueued: false, input_signature: input_signature }
+      else
+        active_job = active_zip_job_for_signature(input_signature)
+        if active_job
+          Rails.logger.info(
+            "Existing ZIP generation job reused image_project_id=#{@image_project.id} " \
+            "image_generation_job_id=#{active_job.id} status=#{active_job.status} signature=#{input_signature.first(12)}"
+          )
+          result = { job: active_job, state: active_job.status.to_sym, enqueued: false, input_signature: input_signature }
+        else
+          queued_job = @image_project.image_generation_jobs.create!(
+            generation_scope: ImageGenerationJob::ALL_TASKS_ZIP_SCOPE,
+            input_signature: input_signature,
+            status: "queued"
+          )
+          result = { job: queued_job, state: :queued, enqueued: true, input_signature: input_signature }
+        end
+      end
+    end
+
+    enqueue_zip_generation!(result[:job], input_signature) if result[:enqueued]
+    result
   end
 
   def generation_notice(job)
@@ -540,13 +713,297 @@ class ImageProjectsController < ApplicationController
     "Current task generation #{job.status}. #{job.generated_images.count} image record created."
   end
 
-  def send_zip_file(job)
+  def zip_generation_notice(result)
+    case result[:state]
+    when :queued
+      "ZIP generation started. You can leave this page and come back later."
+    when :running
+      "ZIP generation is already running. You can leave this page and come back later."
+    else
+      "ZIP generation is #{result[:job].status}. You can leave this page and come back later."
+    end
+  end
+
+  def enqueue_zip_generation!(job, input_signature)
+    queued = ImageProjects::GenerateZipJob.perform_later(job.id)
+    raise "ZIP generation could not be queued." unless queued
+
+    Rails.logger.info(
+      "New ZIP generation job queued image_project_id=#{@image_project.id} image_generation_job_id=#{job.id} " \
+      "active_job_id=#{queued.job_id} queue=#{queued.queue_name} signature=#{input_signature.first(12)}"
+    )
+  rescue StandardError => error
+    job.update!(
+      status: "failed",
+      finished_at: Time.current,
+      errors_list: [ "Queue enqueue failed: #{error.message}" ]
+    )
+    Rails.logger.error(
+      "New ZIP generation job enqueue failed image_project_id=#{@image_project.id} " \
+      "image_generation_job_id=#{job.id} signature=#{input_signature.first(12)} error=#{error.class}: #{error.message}"
+    )
+    raise
+  end
+
+  def active_zip_job_for_signature(input_signature)
+    job = @image_project.latest_active_zip_job(input_signature: input_signature)
+    return unless job
+    return job unless refresh_stale_running_job!(job)
+
+    nil
+  end
+
+  def refresh_stale_running_job!(job)
+    return false unless job&.stale_running?
+
+    job.update!(
+      status: "failed",
+      finished_at: Time.current,
+      errors_list: Array(job.errors_list) + [ "ZIP generation was marked failed because it stopped updating for more than #{ImageGenerationJob::STALE_RUNNING_AFTER.inspect}." ]
+    )
+    Rails.logger.warn(
+      "Stale ZIP generation job marked failed image_project_id=#{@image_project.id} " \
+      "image_generation_job_id=#{job.id} signature=#{job.input_signature.to_s.first(12)}"
+    )
+    true
+  end
+
+  def redirect_to_zip_file(job)
     raise "ZIP generation did not produce a downloadable file." unless job&.zip_file&.attached?
 
-    send_data attachment_bytes(job.zip_file),
-              filename: job.zip_file.filename.to_s,
-              type: "application/zip",
-              disposition: "attachment"
+    redirect_to rails_blob_path(job.zip_file, disposition: "attachment")
+  end
+
+  def load_zip_generation_state
+    @current_zip_signature = @project_downloadable ? ImageProjects::RenderInputSignature.full_zip(@image_project) : nil
+    @current_zip_cached_job = nil
+    @current_zip_active_job = nil
+    @current_zip_failed_job = nil
+    @current_zip_job = nil
+    @current_zip_state = :unavailable
+    @zip_busy = false
+    @current_zip_total_task_count = @tasks.size
+    @current_zip_generated_count = 0
+    return unless @current_zip_signature.present?
+
+    @current_zip_cached_job = @image_project.latest_completed_zip_job(input_signature: @current_zip_signature)
+    @current_zip_active_job = active_zip_job_for_signature(@current_zip_signature) unless @current_zip_cached_job
+    @current_zip_failed_job = @image_project.latest_failed_zip_job(input_signature: @current_zip_signature) unless @current_zip_cached_job || @current_zip_active_job
+    @current_zip_job = @current_zip_cached_job || @current_zip_active_job || @current_zip_failed_job
+    @current_zip_state = if @current_zip_cached_job
+                           :cached
+                         elsif @current_zip_active_job
+                           @current_zip_active_job.status.to_sym
+                         elsif @current_zip_failed_job
+                           :failed
+                         else
+                           :missing
+                         end
+    @zip_busy = @current_zip_active_job.present?
+    @current_zip_total_task_count = zip_total_task_count(@current_zip_job)
+    @current_zip_generated_count = @current_zip_job&.generated_images&.count.to_i
+  end
+
+  def generation_job_status_payload(job)
+    current_signature = ImageProjects::RenderInputSignature.full_zip(@image_project)
+    {
+      id: job.id,
+      status: job.status,
+      generation_scope: job.generation_scope,
+      input_signature_matches: job.input_signature.to_s == current_signature.to_s,
+      generated_image_count: job.generated_images.count,
+      total_task_count: zip_total_task_count(job),
+      warnings_summary: generation_message_summary(job.warnings_list),
+      errors_summary: generation_message_summary(job.errors_list),
+      downloadable: job.downloadable?,
+      download_url: (generation_job_download_image_project_path(@image_project, job_id: job.id) if job.downloadable?),
+      started_at: job.started_at&.iso8601,
+      finished_at: job.finished_at&.iso8601,
+      updated_at: job.updated_at&.iso8601
+    }
+  end
+
+  def load_preview_generation_state
+    @selected_preview_generation_job = nil
+    @preview_all_generation_job = nil
+    @current_preview_generation_job = nil
+    @selected_preview_busy = false
+    @preview_all_busy = false
+
+    selected_signature = @selected_task_preview_signature if @selected_task_previewable
+    if selected_signature.present?
+      @selected_preview_generation_job = active_selected_preview_job_for(@selected_task_index, selected_signature) if @selected_task_preview.blank?
+      @selected_preview_generation_job ||= failed_selected_preview_job_for(@selected_task_index, selected_signature)
+    end
+
+    all_signature = if @project_preview_all_available
+                      ImageProjects::PreviewGenerationRunner.preview_all_signature(@image_project)
+                    end
+    if all_signature.present?
+      @preview_all_generation_job = active_all_preview_job_for(all_signature) || failed_all_preview_job_for(all_signature)
+    end
+
+    @current_preview_generation_job = [ @selected_preview_generation_job, @preview_all_generation_job ].compact.find(&:active?) ||
+                                      @selected_preview_generation_job ||
+                                      @preview_all_generation_job
+    @selected_preview_busy = @selected_preview_generation_job&.active? || selected_task_covered_by_all_preview_job?
+    @preview_all_busy = @preview_all_generation_job&.active? || false
+  end
+
+  def selected_task_covered_by_all_preview_job?
+    @preview_all_generation_job&.active? &&
+      @preview_all_generation_job.task_indexes.include?(@selected_task_index.to_i)
+  end
+
+  def preview_generation_job_status_payload(job)
+    task_indexes = job.task_indexes
+    selected_index = selected_task_index
+    current_match = preview_generation_job_matches_current_inputs?(job)
+    preview_urls = current_preview_urls_for(job)
+    selected_preview_url = preview_urls[selected_index.to_s] || preview_urls[task_indexes.first.to_s]
+    {
+      id: job.id,
+      status: job.status,
+      scope: job.scope,
+      task_indexes: task_indexes,
+      input_signature_matches: current_match,
+      total_count: job.total_count,
+      previewable_count: job.previewable_count,
+      generated_count: job.generated_count,
+      reused_count: job.reused_count,
+      skipped_count: job.skipped_count,
+      failed_count: job.failed_count,
+      warnings_summary: generation_message_summary(job.warnings_list),
+      errors_summary: generation_message_summary(job.errors_list),
+      preview_url: selected_preview_url,
+      preview_urls: preview_urls,
+      message: preview_generation_status_message(job, current_match),
+      updated_at: job.updated_at&.iso8601,
+      finished_at: job.finished_at&.iso8601
+    }
+  end
+
+  def preview_generation_job_matches_current_inputs?(job)
+    if job.selected_task_preview?
+      index = job.task_indexes.first
+      return false if index.blank?
+
+      preview_signature_for_task(index).to_s == job.input_signature.to_s
+    elsif job.all_task_previews?
+      ImageProjects::PreviewGenerationRunner.preview_all_signature(@image_project).to_s == job.input_signature.to_s
+    else
+      false
+    end
+  rescue StandardError
+    false
+  end
+
+  def current_preview_urls_for(job)
+    job.task_indexes.each_with_object({}) do |index, urls|
+      task = @image_project.tasks[index]
+      next if task.blank?
+
+      task_name = task_display_name(task, index)
+      input_signature = ImageProjects::RenderInputSignature.preview_task(@image_project, index)
+      preview = current_task_preview_for(index, task_name, input_signature)
+      next unless preview&.file&.attached?
+
+      urls[index.to_s] = rails_blob_path(preview.file, only_path: true)
+    end
+  end
+
+  def preview_generation_status_message(job, current_match)
+    return "Preview job finished for older inputs. Save or preview again to update this task." unless current_match
+
+    case job.status
+    when "queued", "running"
+      "Preview is being generated..."
+    when "completed", "completed_with_errors"
+      "Preview generation completed."
+    when "failed"
+      "Preview generation failed. Review the error summary and retry."
+    else
+      "Preview generation status is available."
+    end
+  end
+
+  def active_selected_preview_job_for(task_index, input_signature)
+    @image_project.preview_generation_jobs
+      .for_signature(scope: PreviewGenerationJob::SELECTED_TASK_PREVIEW_SCOPE, input_signature: input_signature)
+      .active
+      .order(created_at: :desc)
+      .each do |job|
+        next unless job.task_indexes == [ task_index.to_i ]
+        next if refresh_stale_running_preview_job!(job)
+
+        return job
+      end
+
+    nil
+  end
+
+  def failed_selected_preview_job_for(task_index, input_signature)
+    @image_project.preview_generation_jobs
+      .for_signature(scope: PreviewGenerationJob::SELECTED_TASK_PREVIEW_SCOPE, input_signature: input_signature)
+      .where(status: "failed")
+      .order(updated_at: :desc)
+      .detect { |job| job.task_indexes == [ task_index.to_i ] }
+  end
+
+  def active_all_preview_job_for(input_signature)
+    @image_project.preview_generation_jobs
+      .for_signature(scope: PreviewGenerationJob::ALL_TASK_PREVIEWS_SCOPE, input_signature: input_signature)
+      .active
+      .order(created_at: :desc)
+      .each do |job|
+        next if refresh_stale_running_preview_job!(job)
+
+        return job
+      end
+
+    nil
+  end
+
+  def failed_all_preview_job_for(input_signature)
+    @image_project.preview_generation_jobs
+      .for_signature(scope: PreviewGenerationJob::ALL_TASK_PREVIEWS_SCOPE, input_signature: input_signature)
+      .where(status: "failed")
+      .order(updated_at: :desc)
+      .first
+  end
+
+  def refresh_stale_running_preview_job!(job)
+    return false unless job&.stale_running?
+
+    job.update!(
+      status: "failed",
+      finished_at: Time.current,
+      errors_list: Array(job.errors_list) + [ PreviewGenerationJob::STALE_RUNNING_MESSAGE ]
+    )
+    Rails.logger.warn(
+      "Stale preview generation job marked failed image_project_id=#{@image_project.id} " \
+      "preview_generation_job_id=#{job.id} scope=#{job.scope} signature=#{job.input_signature.to_s.first(12)}"
+    )
+    true
+  end
+
+  def generation_message_summary(messages)
+    Array(messages).flat_map do |message|
+      if message.is_a?(Hash)
+        Array(message["warnings"] || message["errors"]).map { |entry| "#{message["targetName"]}: #{entry}" }
+      else
+        message.to_s
+      end
+    end.compact_blank.first(5)
+  end
+
+  def zip_total_task_count(job)
+    return @image_project.tasks.size unless job&.task_indexes_json.present?
+
+    parsed = JSON.parse(job.task_indexes_json)
+    parsed.is_a?(Array) ? parsed.size : @image_project.tasks.size
+  rescue JSON::ParserError
+    @image_project.tasks.size
   end
 
   def save_request_config_if_present!
@@ -613,10 +1070,12 @@ class ImageProjectsController < ApplicationController
       "id" => layer["id"].presence || "layer#{index}",
       "name" => layer["name"].presence || "Layer #{index + 1}",
       "type" => type,
-      "x" => scalar_position(layer["x"]),
-      "y" => scalar_position(layer["y"]),
+      "x" => layer.key?("x") ? scalar_position(layer["x"]) : (existing_layer&.dig("x") || 0),
+      "y" => layer.key?("y") ? scalar_position(layer["y"]) : (existing_layer&.dig("y") || 0),
       "opacity" => decimal_param(layer["opacity"], 1)
     )
+    common["notes"] = layer["notes"].to_s if layer.key?("notes")
+    apply_relative_position_params!(common, layer)
 
     if type == "image"
       common.merge(
@@ -645,7 +1104,7 @@ class ImageProjectsController < ApplicationController
         "bold" => truthy_param?(layer["bold"]),
         "italic" => truthy_param?(layer["italic"]),
         "align" => %w[left center right].include?(layer["align"].to_s) ? layer["align"] : "center",
-        "notes" => layer["notes"].to_s
+        "notes" => common["notes"].to_s
       ).compact
       if letter_spacing_mode == "spread"
         result["letterSpacingMode"] = "spread"
@@ -865,6 +1324,109 @@ class ImageProjectsController < ApplicationController
       end
     when /\Amove_layer:(\d+):(up|down)\z/
       move_item(layers, Regexp.last_match(1).to_i, Regexp.last_match(2))
+    when /\Aswitch_to_absolute:(\d+)\z/
+      switch_layer_to_absolute!(task, layers, Regexp.last_match(1).to_i)
+    when /\Aswitch_to_relative:(\d+)\z/
+      switch_layer_to_relative!(layers, Regexp.last_match(1).to_i)
+    end
+  end
+
+  def apply_relative_position_params!(layer_config, layer_params)
+    if layer_params.key?("relativeTo")
+      relative_to = layer_params["relativeTo"].to_s.strip.presence
+      if relative_to
+        layer_config["relativeTo"] = relative_to
+      else
+        clear_relative_position!(layer_config)
+      end
+    end
+
+    if layer_params.key?("relativePosition")
+      relative_position = layer_params["relativePosition"].to_s.strip.presence
+      if relative_position
+        layer_config["relativePosition"] = relative_position
+      else
+        layer_config.delete("relativePosition")
+      end
+    end
+
+    return unless layer_params.key?("relativeOffset")
+
+    if layer_params["relativeOffset"].present?
+      layer_config["relativeOffset"] = normalized_numeric_param(layer_params["relativeOffset"])
+    else
+      layer_config.delete("relativeOffset")
+    end
+  end
+
+  def switch_layer_to_absolute!(task, layers, index)
+    layer = layers[index]
+    return unless layer
+
+    layer["y"] = normalized_numeric_param(effective_layer_y(task, layers, index))
+    backup_relative_position!(layer)
+    clear_relative_position!(layer)
+  end
+
+  def switch_layer_to_relative!(layers, index)
+    layer = layers[index]
+    return unless layer
+
+    if layer["previousRelativeTo"].present?
+      layer["relativeTo"] = layer["previousRelativeTo"]
+      layer["relativePosition"] = layer["previousRelativePosition"].presence || "below"
+      if layer.key?("previousRelativeOffset") && layer["previousRelativeOffset"].present?
+        layer["relativeOffset"] = normalized_numeric_param(layer["previousRelativeOffset"])
+      else
+        layer.delete("relativeOffset")
+      end
+      return
+    end
+
+    setup = relative_setup_params_for(index)
+    relative_to = setup["relativeTo"].to_s.strip.presence
+    return unless relative_to
+
+    layer["relativeTo"] = relative_to
+    layer["relativePosition"] = setup["relativePosition"].to_s.strip.presence || "below"
+    if setup["relativeOffset"].present?
+      layer["relativeOffset"] = normalized_numeric_param(setup["relativeOffset"])
+    else
+      layer.delete("relativeOffset")
+    end
+  end
+
+  def relative_setup_params_for(index)
+    setup = params.fetch(:relative_setup, {})
+    setup = setup.permit!.to_h if setup.respond_to?(:permit!)
+    setup.fetch(index.to_s, {})
+  end
+
+  def effective_layer_y(task, layers, index)
+    task_for_resolution = task.deep_dup
+    task_for_resolution["layers"] = layers.map(&:deep_dup)
+    resolved = ImageProjects::Renderer.new(@image_project).resolved_layers_for(task_for_resolution)
+    resolved[index]&.fetch("y", nil) || layers[index]["y"]
+  rescue StandardError => error
+    Rails.logger.warn("Relative position resolution failed while switching to absolute positioning: #{error.message}")
+    layers[index]["y"]
+  end
+
+  def clear_relative_position!(layer)
+    layer.delete("relativeTo")
+    layer.delete("relativePosition")
+    layer.delete("relativeOffset")
+  end
+
+  def backup_relative_position!(layer)
+    return if layer["relativeTo"].blank?
+
+    layer["previousRelativeTo"] = layer["relativeTo"]
+    layer["previousRelativePosition"] = layer["relativePosition"].presence || "below"
+    if layer.key?("relativeOffset") && layer["relativeOffset"].present?
+      layer["previousRelativeOffset"] = normalized_numeric_param(layer["relativeOffset"])
+    else
+      layer.delete("previousRelativeOffset")
     end
   end
 
@@ -880,33 +1442,21 @@ class ImageProjectsController < ApplicationController
   end
 
   def task_preview_readiness(task)
-    layers = Array(task && task["layers"])
-    if layers.empty?
-      return {
-        ready: false,
-        message: "Add at least one layer before previewing.",
-        alert: "Please import Excel or add layers before previewing."
-      }
-    end
+    ImageProjects::TaskPreviewReadiness.call(@image_project, task)
+  end
 
-    unless layers.any? { |layer| renderable_layer?(layer) }
-      return {
-        ready: false,
-        message: "Add at least one renderable text or image layer before previewing.",
-        alert: "Please import Excel or add renderable layers before previewing."
-      }
-    end
+  def project_preview_all_readiness(tasks)
+    task_list = Array(tasks)
+    readiness_checker = ImageProjects::TaskPreviewReadiness.new(@image_project)
+    readinesses = task_list.map { |task| readiness_checker.call(task) }
+    return { ready: true, message: nil, alert: nil } if readinesses.any? { |readiness| readiness[:ready] }
 
-    missing_images = missing_required_images_for_tasks([ task ])
-    if missing_images.any?
-      return {
-        ready: false,
-        message: "Upload the required source images before previewing: #{missing_images.join(', ')}.",
-        alert: "Please upload the required source images before previewing."
-      }
-    end
-
-    { ready: true, message: nil, alert: nil }
+    first_readiness = readinesses.find { |readiness| readiness[:message].present? || readiness[:alert].present? }
+    {
+      ready: false,
+      message: first_readiness&.fetch(:message, nil) || "Import Excel or add at least one previewable task.",
+      alert: first_readiness&.fetch(:alert, nil) || "Please import Excel or add at least one previewable task."
+    }
   end
 
   def project_download_readiness(tasks)
@@ -1252,6 +1802,11 @@ class ImageProjectsController < ApplicationController
     return fallback if value.blank?
 
     value.to_f
+  end
+
+  def normalized_numeric_param(value)
+    number = decimal_param(value, 0)
+    number == number.to_i ? number.to_i : number
   end
 
   def scalar_position(value)

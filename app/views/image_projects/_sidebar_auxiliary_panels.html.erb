@@ -1,0 +1,220 @@
+<% warning_summary_parts = [] %>
+<% warning_summary_parts << pluralize(selected_task_errors.size, "error") if selected_task_errors.any? %>
+<% warning_summary_parts << pluralize(selected_task_warnings.size, "warning") if selected_task_warnings.any? %>
+<% warning_summary = warning_summary_parts.any? ? warning_summary_parts.join(", ") : "No issues" %>
+<% warning_panel_state = selected_task_errors.any? ? "has-errors" : (selected_task_warnings.any? ? "has-warnings" : "") %>
+<% image_issue_count = @readiness_summary[:images].count { |item| item[:status] != "matched" } %>
+<% image_summary = if @readiness_summary[:images].empty?
+     "No references"
+   elsif image_issue_count.positive?
+     pluralize(image_issue_count, "issue")
+   else
+     "All matched"
+   end %>
+<% font_issue_count = @readiness_summary[:fonts].count { |item| item[:status] != "matched" } %>
+<% font_summary = if @readiness_summary[:fonts].empty?
+     "No references"
+   elsif font_issue_count.positive?
+     pluralize(font_issue_count, "issue")
+   else
+     "All matched"
+   end %>
+
+<aside class="side-stack" aria-label="Project support panels">
+  <details class="panel sidebar-details warnings-panel <%= warning_panel_state %>" <%= "open" if warnings_panel_open %>>
+    <summary>
+      <span class="summary-title">Warnings / Errors</span>
+      <span class="summary-meta"><%= warning_summary %></span>
+    </summary>
+    <div class="details-body">
+      <h2>Warnings / Errors for <%= selected_task_name %></h2>
+      <% if selected_task_errors.any? || selected_task_warnings.any? %>
+        <div class="message-list">
+          <% selected_task_errors.each do |message| %>
+            <p class="error-text"><%= message %></p>
+          <% end %>
+          <% selected_task_warnings.each do |message| %>
+            <p class="warning-text"><%= message %></p>
+          <% end %>
+        </div>
+      <% else %>
+        <p class="empty-note">No current warnings or errors.</p>
+      <% end %>
+    </div>
+  </details>
+
+  <details class="panel sidebar-details required-images-panel <%= "has-missing" if missing_images_open %>" <%= "open" if missing_images_open %>>
+    <summary>
+      <span class="summary-title">Required Images</span>
+      <span class="summary-meta"><%= image_summary %></span>
+    </summary>
+    <div class="details-body">
+      <h2>Required Images</h2>
+      <% if @readiness_summary[:images].any? %>
+        <ul class="check-list compact-list">
+          <% @readiness_summary[:images].each do |item| %>
+            <li class="readiness-<%= item[:status] %>">
+              <span class="readiness-icon <%= item[:status] == "matched" ? "ok" : "missing" %>" aria-hidden="true"><%= item[:status] == "matched" ? "&#10003;".html_safe : "&#10007;".html_safe %></span>
+              <%= item[:message] %>
+            </li>
+          <% end %>
+        </ul>
+      <% else %>
+        <p class="empty-note">No image references found.</p>
+      <% end %>
+
+      <div class="sidebar-section">
+        <h3>Image Assets</h3>
+        <div class="asset-list">
+          <% @image_project.image_assets.each do |asset| %>
+            <div class="asset-row">
+              <% if asset.file.attached? %>
+                <%= image_tag asset.file, class: "asset-thumb" %>
+              <% end %>
+              <div class="asset-meta">
+                <span class="asset-label">Uploaded file</span>
+                <strong><%= asset.name %></strong>
+                <span>Dimensions: <%= [asset.width, asset.height].compact.join(" x ").presence || "unknown" %></span>
+                <%= form_with url: update_image_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :patch, class: "asset-alias-form" do %>
+                  <label>
+                    <span>Excel Match Name</span>
+                    <%= text_field_tag "image_asset[alias_name]", asset.alias_name.presence || asset.normalized_name %>
+                    <small class="field-help">If Excel says p1, this field should be p1.</small>
+                  </label>
+                  <%= submit_tag "Save", class: "button tiny" %>
+                <% end %>
+              </div>
+              <%= button_to "Delete", image_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :delete, class: "button tiny danger" %>
+            </div>
+          <% end %>
+          <% if @image_project.image_assets.empty? %>
+            <p class="empty-note">No image assets uploaded yet.</p>
+          <% end %>
+        </div>
+      </div>
+    </div>
+  </details>
+
+  <details class="panel sidebar-details font-library-panel <%= "has-missing" if missing_fonts_open %>" id="font-library" <%= "open" if missing_fonts_open %>>
+    <summary>
+      <span class="summary-title">Font Library</span>
+      <span class="summary-meta"><%= font_summary %></span>
+    </summary>
+    <div class="details-body">
+      <h2>Font Library</h2>
+      <div class="sidebar-section">
+        <h3>Required Fonts</h3>
+        <% if @readiness_summary[:fonts].any? %>
+          <ul class="check-list compact-list">
+            <% @readiness_summary[:fonts].each do |item| %>
+              <li class="readiness-<%= item[:status] %>">
+                <span class="readiness-icon <%= item[:status] == "matched" ? "ok" : "warning" %>" aria-hidden="true"><%= item[:status] == "matched" ? "&#10003;".html_safe : "&#9888;".html_safe %></span>
+                <%= item[:message] %>
+              </li>
+            <% end %>
+          </ul>
+        <% else %>
+          <p class="empty-note">No font references found.</p>
+        <% end %>
+      </div>
+
+      <% font_library_manager_open = missing_fonts_open %>
+      <details id="font-library-manager" class="compact-details" data-persist-details-key="font-library-manager" <%= "open" if font_library_manager_open %>>
+        <summary>Manage Font Library</summary>
+        <div class="details-body">
+          <%= form_with url: upload_global_fonts_image_project_path(@image_project, task_index: @selected_task_index), method: :post, multipart: true, id: "global-font-upload-form", class: "workflow-form compact-upload-form", data: { upload_reminder: true, upload_kind: "global-fonts", upload_action: "Upload", upload_singular: "Font", upload_plural: "Fonts" } do |form| %>
+            <%= form.file_field :fonts, multiple: true, include_hidden: false, accept: ".ttf,.otf,.woff,.woff2", id: "global-font-file-input", data: { global_font_file_input: true } %>
+            <label>
+              <span>Excel Match Name</span>
+              <%= text_field_tag "global_font_asset[match_name]", nil, placeholder: "Optional for one font" %>
+            </label>
+            <button type="submit" class="button" data-processing-label="Uploading...">Upload Font</button>
+            <p id="global-font-upload-helper" class="field-help" data-font-library-helper>Choose .ttf, .otf, .woff, or .woff2 font files.</p>
+            <p class="upload-reminder-message" hidden data-upload-reminder-message>File selected but not uploaded yet.</p>
+          <% end %>
+
+          <div class="asset-list">
+            <h3>Global Uploaded Fonts</h3>
+            <% @global_font_assets.each do |asset| %>
+              <div class="asset-row no-thumb">
+                <div class="asset-meta">
+                  <span class="asset-label">Global</span>
+                  <strong><%= asset.name %></strong>
+                  <%= form_with url: update_global_font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :patch, class: "asset-alias-form" do %>
+                    <label>
+                      <span>Excel Match Name</span>
+                      <%= text_field_tag "global_font_asset[match_name]", asset.match_name.presence || asset.normalized_name %>
+                    </label>
+                    <%= submit_tag "Save", class: "button tiny" %>
+                  <% end %>
+                </div>
+                <%= button_to "Delete", global_font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :delete, class: "button tiny danger", form: { data: { turbo_confirm: "Delete this global font for all projects?" } } %>
+              </div>
+            <% end %>
+            <% if @global_font_assets.empty? %>
+              <p class="empty-note">No global fonts uploaded yet.</p>
+            <% end %>
+          </div>
+
+          <% if @project_font_assets.any? %>
+            <details class="compact-details legacy-fonts">
+              <summary>Project legacy fonts (<%= @project_font_assets.size %>)</summary>
+              <div class="asset-list">
+                <% @project_font_assets.each do |asset| %>
+                  <div class="asset-row no-thumb">
+                    <div class="asset-meta">
+                      <span class="asset-label">Project</span>
+                      <strong><%= asset.name %></strong>
+                      <%= form_with url: update_font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :patch, class: "asset-alias-form" do %>
+                        <label>
+                          <span>Excel Match Name</span>
+                          <%= text_field_tag "font_asset[alias_name]", asset.alias_name.presence || asset.normalized_name %>
+                        </label>
+                        <%= submit_tag "Save", class: "button tiny" %>
+                      <% end %>
+                    </div>
+                    <%= button_to "Delete", font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :delete, class: "button tiny danger" %>
+                  </div>
+                <% end %>
+              </div>
+            </details>
+          <% end %>
+        </div>
+      </details>
+    </div>
+  </details>
+
+  <details class="panel sidebar-details advanced-panel" id="advanced-json-panel" data-persist-details-key="advanced-json">
+    <summary>
+      <span class="summary-title">Advanced JSON</span>
+    </summary>
+    <div class="details-body">
+      <%= form_with model: @image_project, method: :patch, class: "stack advanced-json-form" do |form| %>
+        <%= hidden_field_tag :task_index, @selected_task_index %>
+        <%= form.text_field :name %>
+        <%= text_area_tag :config_json_text, @image_project.config_json, rows: 18, class: "json-box" %>
+        <button type="submit" class="button" data-processing-label="Saving...">Save Raw JSON</button>
+      <% end %>
+    </div>
+  </details>
+
+  <details class="panel sidebar-details danger-zone" id="danger-zone-panel">
+    <summary>
+      <span class="summary-title">Danger Zone</span>
+    </summary>
+    <div class="details-body">
+      <div class="danger-actions">
+        <div>
+          <h3>Clear project data</h3>
+          <p>Clear imported Excel data, uploaded images, previews, generated images, and ZIPs. Font Library will be kept.</p>
+          <%= link_to "Clear project data", clear_data_confirmation_image_project_path(@image_project, return_to: image_project_path(@image_project, task_index: @selected_task_index)), class: "button danger" %>
+        </div>
+        <div>
+          <h3>Delete project</h3>
+          <p>Delete this project and all uploaded/generated files. This cannot be undone.</p>
+          <%= link_to "Delete Project", delete_confirmation_image_project_path(@image_project, return_to: image_project_path(@image_project, task_index: @selected_task_index)), class: "button danger" %>
+        </div>
+      </div>
+    </div>
+  </details>
+</aside>

@@ -20,6 +20,12 @@ class ImageProjects::ProjectDestroyerTest < ActiveSupport::TestCase
     image_asset = image_asset_with_file(project, "p1.png")
     font_asset = font_asset_with_file(project, "Brand.ttf")
     job = project.image_generation_jobs.create!(status: "completed")
+    preview_job = project.preview_generation_jobs.create!(
+      status: "queued",
+      scope: PreviewGenerationJob::SELECTED_TASK_PREVIEW_SCOPE,
+      task_indexes_json: JSON.generate([ 0 ]),
+      input_signature: "signature"
+    )
     generated = job.generated_images.create!(target_name: "P1", format: "png", width: 1, height: 1)
     generated_blob = attach(generated.file, "P1.png", "image/png", Base64.decode64(PNG_1X1))
     zip_blob = attach(job.zip_file, "generated.zip", "application/zip", "zip-bytes")
@@ -34,6 +40,7 @@ class ImageProjects::ProjectDestroyerTest < ActiveSupport::TestCase
     refute FontAsset.exists?(font_asset.id)
     refute TaskPreview.exists?(task_preview.id)
     refute ImageGenerationJob.exists?(job.id)
+    refute PreviewGenerationJob.exists?(preview_job.id)
     refute GeneratedImage.exists?(generated.id)
     blobs.each do |blob|
       refute ActiveStorage::Blob.exists?(blob.id)

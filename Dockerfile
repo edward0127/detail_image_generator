@@ -36,7 +36,8 @@ ENV RAILS_ENV="production" \
     BUNDLE_WITHOUT="development:test" \
     LD_PRELOAD="/usr/local/lib/libjemalloc.so" \
     CHROME_BIN="/usr/bin/chromium" \
-    BROWSER_PATH="/usr/bin/chromium"
+    BROWSER_PATH="/usr/bin/chromium" \
+    SOLID_QUEUE_IN_PUMA="true"
 
 # Throw-away build stage to reduce size of final image
 FROM base AS build

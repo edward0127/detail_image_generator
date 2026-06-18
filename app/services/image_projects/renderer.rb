@@ -29,6 +29,7 @@ module ImageProjects
       @project = project
       @image_matcher = ImageMatcher.new(project)
       @font_matcher = FontMatcher.new(project)
+      @data_uri_cache = {}
     end
 
     def render_preview(task_config, scale: 0.5)
@@ -43,6 +44,19 @@ module ImageProjects
       project.tasks.map { |task| render_final(task) }
     end
 
+    def resolved_layers_for(task_config, scale: 1.0, preview: false)
+      dimensions = dimensions_for(task_config, scale: scale, preview: preview)
+      resolved_layers_for_dimensions(task_config, dimensions)
+    end
+
+    def with_reused_browser
+      @reuse_browser_depth = @reuse_browser_depth.to_i + 1
+      yield
+    ensure
+      @reuse_browser_depth = [ @reuse_browser_depth.to_i - 1, 0 ].max
+      reset_reused_browser! if @reuse_browser_depth.zero?
+    end
+
     def self.browser_path
       BROWSER_PATHS.find { |path| path.present? && File.exist?(path) }
     end
@@ -53,6 +67,7 @@ module ImageProjects
 
     def render_task(task_config, scale:, preview:)
       browser = nil
+      reused_browser = false
       warnings = Array(task_config["warnings"]).dup
       errors = []
       dimensions = dimensions_for(task_config, scale: scale, preview: preview)
@@ -61,28 +76,13 @@ module ImageProjects
       html = build_html(task_config, dimensions, format, warnings, errors)
       output_path = output_path_for(task_config["targetName"], format)
 
-      browser = Ferrum::Browser.new(
-        browser_path: self.class.browser_path,
-        window_size: [ dimensions[:target_width], dimensions[:target_height] ],
-        timeout: 20,
-        process_timeout: 20,
-        browser_options: {
-          "no-sandbox" => nil,
-          "disable-dev-shm-usage" => nil,
-          "disable-gpu" => nil,
-          "hide-scrollbars" => nil
-        }
-      )
-      browser.content = html
-      wait_for_assets(browser)
-      browser.resize(width: dimensions[:target_width], height: dimensions[:target_height])
-      browser.screenshot(
-        path: output_path,
-        selector: "#frame",
-        format: screenshot_format,
-        quality: screenshot_format == "png" ? nil : 95,
-        background_color: transparent_png?(task_config, format) ? Ferrum::RGBA.new(0, 0, 0, 0.0) : nil
-      )
+      browser = browser_for_render(dimensions)
+      reused_browser = reuse_browser_active?
+      if reused_browser
+        browser.create_page { |page| render_page(page, task_config, dimensions, html, output_path, screenshot_format, format) }
+      else
+        render_page(browser, task_config, dimensions, html, output_path, screenshot_format, format)
+      end
 
       RenderResult.new(
         path: output_path,
@@ -95,6 +95,7 @@ module ImageProjects
       )
     rescue StandardError => error
       ImageProjects::TempfileManager.delete(output_path) if output_path.present?
+      reset_reused_browser! if reused_browser
       errors << "Renderer failed for '#{task_config["targetName"].presence || "Untitled task"}': #{error.message}"
       RenderResult.new(
         path: nil,
@@ -106,13 +107,60 @@ module ImageProjects
         errors: errors.compact
       )
     ensure
+      safely_quit_browser(browser) unless reused_browser
+    end
+
+    def render_page(page, task_config, dimensions, html, output_path, screenshot_format, format)
+      page.content = html
+      wait_for_assets(page)
+      page.resize(width: dimensions[:target_width], height: dimensions[:target_height])
+      page.screenshot(
+        path: output_path,
+        selector: "#frame",
+        format: screenshot_format,
+        quality: screenshot_format == "png" ? nil : 95,
+        background_color: transparent_png?(task_config, format) ? Ferrum::RGBA.new(0, 0, 0, 0.0) : nil
+      )
+    end
+
+    def browser_for_render(dimensions)
+      return new_browser(dimensions) unless reuse_browser_active?
+
+      @reused_browser ||= new_browser(dimensions)
+    end
+
+    def new_browser(dimensions)
+      Ferrum::Browser.new(
+        browser_path: self.class.browser_path,
+        window_size: [ dimensions[:target_width], dimensions[:target_height] ],
+        timeout: browser_timeout,
+        process_timeout: browser_timeout,
+        browser_options: {
+          "no-sandbox" => nil,
+          "disable-dev-shm-usage" => nil,
+          "disable-gpu" => nil,
+          "hide-scrollbars" => nil
+        }
+      )
+    end
+
+    def browser_timeout
+      ENV.fetch("BROWSER_RENDER_TIMEOUT", "60").to_i
+    end
+
+    def reuse_browser_active?
+      @reuse_browser_depth.to_i.positive?
+    end
+
+    def reset_reused_browser!
+      browser = @reused_browser
+      @reused_browser = nil
       safely_quit_browser(browser)
     end
 
     def build_html(task_config, dimensions, format, warnings, errors)
       canvas = task_config.fetch("canvas", {})
-      layers = prepared_layers_for_render(task_config, dimensions)
-      layers = resolve_relative_layers(layers)
+      layers = resolved_layers_for_dimensions(task_config, dimensions)
       background = canvas_background(canvas)
       frame_background = frame_background(canvas, format)
       font_faces = []
@@ -173,6 +221,10 @@ module ImageProjects
       apply_design_image_scale!(layers, dimensions)
       apply_design_text_layout!(layers, dimensions)
       layers
+    end
+
+    def resolved_layers_for_dimensions(task_config, dimensions)
+      resolve_relative_layers(prepared_layers_for_render(task_config, dimensions))
     end
 
     def apply_design_image_scale!(layers, dimensions)
@@ -636,10 +688,13 @@ module ImageProjects
 
     def data_uri(attachment)
       blob = attachment.blob
-      content_type = blob.content_type.presence || "application/octet-stream"
-      bytes = +"".b
-      blob.download { |chunk| bytes << chunk }
-      "data:#{content_type};base64,#{Base64.strict_encode64(bytes)}"
+      cache_key = [ blob.id, blob.checksum, blob.byte_size, blob.content_type ]
+      @data_uri_cache[cache_key] ||= begin
+        content_type = blob.content_type.presence || "application/octet-stream"
+        bytes = +"".b
+        blob.download { |chunk| bytes << chunk }
+        "data:#{content_type};base64,#{Base64.strict_encode64(bytes)}"
+      end
     end
 
     def html_attr(value)

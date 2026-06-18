@@ -2,6 +2,17 @@
 <% final_width = @task.dig("output", "width").presence || @task.dig("canvas", "width") || 1650 %>
 <% final_height = @task.dig("output", "height").presence || @task.dig("canvas", "height") || 2480 %>
 <% selected_layout_mode = @task["layoutMode"].presence || @config["layoutMode"].presence || "strict" %>
+<% zip_button_label = @current_zip_cached_job ? "Download ZIP (All Images)" : "Generate ZIP (All Images)" %>
+<% preview_selected_button_label = "Preview Selected Image" %>
+<% preview_all_button_label = "Preview All Images" %>
+<% selected_task_errors = Array(@selected_task_status[:errors]) %>
+<% selected_task_warnings = Array(@selected_task_status[:warnings]) %>
+<% warnings_panel_open = selected_task_errors.any? %>
+<% missing_images_open = @readiness_summary[:images].any? { |item| item[:status] != "matched" } %>
+<% missing_fonts_open = @readiness_summary[:fonts].any? { |item| item[:status] != "matched" } %>
+<% preview_status_needs_attention = @current_preview_generation_job.present? && (@current_preview_generation_job.active? || @current_preview_generation_job.status == "failed") %>
+<% zip_status_needs_attention = @current_zip_job.present? && (@current_zip_job.active? || @current_zip_job.failed?) %>
+<% background_status_open = preview_status_needs_attention || zip_status_needs_attention %>
 
 <main class="page">
   <header class="page-header compact">
@@ -13,67 +24,183 @@
   </header>
 
   <% if notice.present? %>
-    <div class="flash notice"><%= notice %></div>
+    <div class="flash notice" role="status" aria-live="polite" data-flash-message>
+      <span class="flash-content"><%= notice %></span>
+      <button type="button" class="flash-close" aria-label="Dismiss message" data-flash-close>&times;</button>
+    </div>
   <% end %>
   <% if alert.present? %>
-    <div class="flash alert"><%= alert %></div>
+    <div class="flash alert" role="alert" data-flash-message>
+      <span class="flash-content"><%= alert %></span>
+    </div>
   <% end %>
 
-  <section class="workflow-panel" aria-label="Generation workflow">
-    <div class="workflow-step">
-      <div>
-        <span class="step-label">Step 1</span>
-        <h2>Import Excel</h2>
-        <p>Import an Excel instruction file to create image tasks automatically.</p>
-      </div>
-      <%= form_with url: import_excel_image_project_path(@image_project, task_index: @selected_task_index), method: :post, multipart: true, class: "workflow-form", data: { upload_reminder: true, upload_kind: "excel", upload_pending_label: "Import Excel Now" } do |form| %>
-        <%= form.file_field :excel_file, accept: ".xlsx,.xls" %>
-        <button type="submit" class="button primary" data-processing-label="Uploading...">Import Excel</button>
-        <p class="upload-reminder-message" hidden data-upload-reminder-message>File selected but not uploaded yet.</p>
-      <% end %>
-    </div>
-
-    <div class="workflow-step">
-      <div>
-        <span class="step-label">Step 2</span>
-        <h2>Upload Images</h2>
-        <p>Upload all source images referenced by the Excel file.</p>
-      </div>
-      <%= form_with url: upload_images_image_project_path(@image_project, task_index: @selected_task_index), method: :post, multipart: true, class: "workflow-form", data: { upload_reminder: true, upload_kind: "images", upload_action: "Upload", upload_singular: "Image", upload_plural: "Images" } do |form| %>
-        <%= form.file_field :images, multiple: true, include_hidden: false, accept: ".png,.jpg,.jpeg,.webp" %>
-        <button type="submit" class="button" data-processing-label="Uploading...">Upload Images</button>
-        <p class="upload-reminder-message" hidden data-upload-reminder-message>File selected but not uploaded yet.</p>
-      <% end %>
-    </div>
-
-    <div class="workflow-step generate-step">
-      <div>
-        <span class="step-label">Step 3</span>
-        <h2>Preview / Download</h2>
-        <p>Preview the selected image, then download the final ZIP for all images.</p>
-      </div>
-      <div class="selected-task-banner">
-        <span>Selected Image: <strong><%= selected_task_name %></strong></span>
-      </div>
-      <div class="workflow-actions">
-        <div class="workflow-action-item">
-          <%= button_tag "Preview Selected Image", type: "submit", form: "task-editor-form", name: "after_save_action", value: "preview_current", class: "button", disabled: !@selected_task_previewable, data: { processing_label: "Generating preview..." } %>
-          <% unless @selected_task_previewable %>
-            <p class="field-help workflow-disabled-message"><%= @selected_task_preview_readiness[:message] %></p>
+  <div class="project-layout">
+    <aside class="project-sidebar">
+      <section class="workflow-panel" aria-label="Generation workflow">
+        <div class="workflow-step">
+          <div>
+            <span class="step-label">Step 1</span>
+            <h2>Import Excel</h2>
+            <p>Import an Excel instruction file to create image tasks automatically.</p>
+          </div>
+          <%= form_with url: import_excel_image_project_path(@image_project, task_index: @selected_task_index), method: :post, multipart: true, class: "workflow-form", data: { upload_reminder: true, upload_kind: "excel", upload_pending_label: "Import Excel Now" } do |form| %>
+            <%= form.file_field :excel_file, accept: ".xlsx,.xls" %>
+            <button type="submit" class="button primary" data-processing-label="Uploading...">Import Excel</button>
+            <p class="upload-reminder-message" hidden data-upload-reminder-message>File selected but not uploaded yet.</p>
           <% end %>
         </div>
-        <div class="workflow-action-item">
-          <%= button_tag "Download ZIP (All Images)", type: "submit", form: "task-editor-form", name: "after_save_action", value: "download_zip", class: "button success", disabled: !@project_downloadable, data: { processing_label: "Generating images and preparing ZIP..." } %>
-          <% unless @project_downloadable %>
-            <p class="field-help workflow-disabled-message"><%= @project_download_readiness[:message] %></p>
+
+        <div class="workflow-step">
+          <div>
+            <span class="step-label">Step 2</span>
+            <h2>Upload Images</h2>
+            <p>Upload all source images referenced by the Excel file.</p>
+          </div>
+          <%= form_with url: upload_images_image_project_path(@image_project, task_index: @selected_task_index), method: :post, multipart: true, class: "workflow-form", data: { upload_reminder: true, upload_kind: "images", upload_action: "Upload", upload_singular: "Image", upload_plural: "Images" } do |form| %>
+            <%= form.file_field :images, multiple: true, include_hidden: false, accept: ".png,.jpg,.jpeg,.webp" %>
+            <button type="submit" class="button" data-processing-label="Uploading...">Upload Images</button>
+            <p class="upload-reminder-message" hidden data-upload-reminder-message>File selected but not uploaded yet.</p>
           <% end %>
         </div>
-      </div>
-    </div>
-  </section>
 
-  <div class="workspace">
-    <aside class="panel task-panel">
+        <div class="workflow-step generate-step">
+          <div>
+            <span class="step-label">Step 3</span>
+            <h2>Preview / Download</h2>
+            <p>Preview the selected image, preview all images, then generate or download the final ZIP.</p>
+          </div>
+          <div class="selected-task-banner">
+            <span>Selected Image: <strong><%= selected_task_name %></strong></span>
+          </div>
+          <div class="workflow-actions">
+            <div class="workflow-action-item">
+              <%= button_tag preview_selected_button_label, type: "submit", form: "task-editor-form", name: "after_save_action", value: "preview_current", class: "button", disabled: !@selected_task_previewable || @selected_preview_busy, data: { processing_label: "Generating preview...", operation_action: "selected-preview", default_label: preview_selected_button_label, ready: @selected_task_previewable.to_s } %>
+              <% if @selected_preview_busy %>
+                <p class="field-help workflow-disabled-message">Preview generation is running.</p>
+              <% elsif !@selected_task_previewable %>
+                <p class="field-help workflow-disabled-message"><%= @selected_task_preview_readiness[:message] %></p>
+              <% end %>
+            </div>
+            <div class="workflow-action-item">
+              <%= button_tag preview_all_button_label, type: "submit", form: "task-editor-form", name: "after_save_action", value: "preview_all", class: "button", disabled: !@project_preview_all_available || @preview_all_busy, data: { processing_label: "Generating all previews...", operation_action: "preview-all", default_label: preview_all_button_label, ready: @project_preview_all_available.to_s } %>
+              <% if @preview_all_busy %>
+                <p class="field-help workflow-disabled-message">Preview generation is running for all images.</p>
+              <% elsif !@project_preview_all_available %>
+                <p class="field-help workflow-disabled-message"><%= @project_preview_all_readiness[:message] %></p>
+              <% end %>
+            </div>
+            <div class="workflow-action-item">
+              <%= button_tag zip_button_label, type: "submit", form: "task-editor-form", name: "after_save_action", value: "download_zip", class: "button success", disabled: !@project_downloadable || @zip_busy, data: { processing_label: (@current_zip_cached_job ? "Preparing ZIP download..." : "Generating images and preparing ZIP..."), operation_action: "zip", default_label: zip_button_label, ready: @project_downloadable.to_s, zip_action_button: true } %>
+              <% if @zip_busy %>
+                <p class="field-help workflow-disabled-message">ZIP generation is running.</p>
+              <% elsif !@project_downloadable %>
+                <p class="field-help workflow-disabled-message"><%= @project_download_readiness[:message] %></p>
+              <% end %>
+            </div>
+          </div>
+
+          <details class="background-status-block" data-background-status-details <%= "open" if background_status_open %>>
+            <summary>Background Status</summary>
+            <div class="background-status-grid">
+              <div data-preview-status-container>
+                <% if @current_preview_generation_job.present? %>
+                  <% preview_status_errors = @current_preview_generation_job.errors_list.first(5) %>
+                  <% preview_status_active = @current_preview_generation_job.active? %>
+                  <% preview_status_title = if preview_status_active
+                    @current_preview_generation_job.all_task_previews? ? "Preview all running" : "Preview generation running"
+                  else
+                    @current_preview_generation_job.status.to_s.humanize
+                  end %>
+                  <div class="preview-status-panel status-<%= @current_preview_generation_job.status %>"
+                       data-preview-status-panel
+                       data-status="<%= @current_preview_generation_job.status %>"
+                       data-scope="<%= @current_preview_generation_job.scope %>"
+                       data-task-indexes="<%= @current_preview_generation_job.task_indexes.to_json %>"
+                       data-status-url="<%= preview_generation_job_status_image_project_path(@image_project, job_id: @current_preview_generation_job.id, task_index: @selected_task_index) %>"
+                       data-poll="<%= @current_preview_generation_job.active? %>"
+                       data-poll-interval="3000"
+                       data-selected-task-index="<%= @selected_task_index %>">
+                    <div class="preview-status-header">
+                      <div>
+                        <span class="step-label">Preview</span>
+                        <h3 class="status-title">
+                          <span class="status-spinner" data-preview-status-spinner aria-hidden="true" <%= "hidden" unless preview_status_active %>></span>
+                          <span data-preview-status-text><%= preview_status_title %></span>
+                        </h3>
+                      </div>
+                      <span class="preview-progress">
+                        <span data-preview-generated-count><%= @current_preview_generation_job.generated_count %></span>
+                        <span class="muted">/</span>
+                        <span data-preview-total-count><%= @current_preview_generation_job.previewable_count %></span>
+                      </span>
+                    </div>
+                    <p data-preview-status-message><%= @current_preview_generation_job.active? ? "Preview is being generated..." : "Preview generation status is available." %></p>
+                    <p class="muted">Tasks: <span data-preview-reused-count><%= @current_preview_generation_job.reused_count %></span> reused, <span data-preview-skipped-count><%= @current_preview_generation_job.skipped_count %></span> skipped, <span data-preview-failed-count><%= @current_preview_generation_job.failed_count %></span> failed.</p>
+                    <% if @stale_task_preview.present? && @selected_task_preview.blank? %>
+                      <p class="muted">Older preview shown while new preview is generating.</p>
+                    <% end %>
+                    <div class="preview-status-errors" data-preview-error-summary <%= "hidden" if preview_status_errors.empty? %>>
+                      <% preview_status_errors.each do |message| %>
+                        <p class="error-text"><%= message %></p>
+                      <% end %>
+                    </div>
+                  </div>
+                <% else %>
+                  <p class="empty-note">Preview status appears here after preview generation starts.</p>
+                <% end %>
+              </div>
+
+              <div id="zip-detail" data-zip-status-container>
+                <% if @current_zip_job.present? %>
+                  <% status_message =
+                    case @current_zip_state
+                    when :cached
+                      "ZIP is ready for the current project inputs."
+                    when :queued, :running
+                      "This may take a while for many images. You can leave this page and come back later."
+                    when :failed
+                      "ZIP generation failed. Review the error summary and generate again when ready."
+                    else
+                      "ZIP generation status is available."
+                    end %>
+                  <% status_errors = @current_zip_job.errors_list.first(5) %>
+                  <% zip_status_active = @current_zip_job.active? %>
+                  <div class="zip-status-panel status-<%= @current_zip_job.status %>"
+                       data-zip-status-panel
+                       data-status="<%= @current_zip_job.status %>"
+                       data-status-url="<%= generation_job_status_image_project_path(@image_project, job_id: @current_zip_job.id) %>"
+                       data-poll="<%= @current_zip_active_job.present? %>"
+                       data-poll-interval="3000">
+                    <div class="zip-status-header">
+                      <div>
+                        <span class="step-label">ZIP</span>
+                        <h3 class="status-title">
+                          <span class="status-spinner" data-zip-status-spinner aria-hidden="true" <%= "hidden" unless zip_status_active %>></span>
+                          <span data-zip-status-text><%= @zip_busy ? "ZIP generation running" : @current_zip_job.status.to_s.humanize %></span>
+                        </h3>
+                      </div>
+                      <span class="zip-progress"><span data-zip-generated-count><%= @current_zip_generated_count %></span> / <span data-zip-total-count><%= @current_zip_total_task_count %></span></span>
+                    </div>
+                    <p data-zip-status-message><%= status_message %></p>
+                    <p class="muted">Started: <span data-zip-started-at><%= @current_zip_job.started_at&.strftime("%Y-%m-%d %H:%M") || "not started" %></span></p>
+                    <div class="zip-status-errors" data-zip-error-summary <%= "hidden" if status_errors.empty? %>>
+                      <% status_errors.each do |message| %>
+                        <p class="error-text"><%= message %></p>
+                      <% end %>
+                    </div>
+                    <%= link_to "Download ZIP", (@current_zip_job.downloadable? ? generation_job_download_image_project_path(@image_project, job_id: @current_zip_job.id) : "#"), class: "button success", hidden: !@current_zip_job.downloadable?, data: { zip_download_link: true } %>
+                  </div>
+                <% else %>
+                  <p class="empty-note">ZIP status appears here after generation starts.</p>
+                <% end %>
+              </div>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <aside class="panel task-panel">
       <div class="panel-heading">
         <div>
           <h2>Select Task</h2>
@@ -114,15 +241,24 @@
       </div>
     </aside>
 
-    <main class="main-stack">
-      <section class="panel preview-panel main-preview">
+      <%= render "sidebar_auxiliary_panels",
+                 selected_task_name: selected_task_name,
+                 selected_task_errors: selected_task_errors,
+                 selected_task_warnings: selected_task_warnings,
+                 warnings_panel_open: warnings_panel_open,
+                 missing_images_open: missing_images_open,
+                 missing_fonts_open: missing_fonts_open %>
+    </aside>
+
+    <main class="main-stack project-content">
+      <section class="panel preview-panel main-preview" id="preview-detail">
         <div class="panel-heading">
           <h2>Preview for <%= selected_task_name %></h2>
           <span class="status-badge status-<%= @selected_task_status[:status] %>"><%= @selected_task_status[:label] %></span>
         </div>
         <p class="current-task-name">Selected Image: <strong><%= selected_task_name %></strong></p>
         <p class="preview-scale-note">Preview is scaled for browser display. Final output size: <strong><%= final_width %> x <%= final_height %></strong>. Download ZIP contains full-size generated images for all tasks.</p>
-        <div class="preview-stage">
+        <div class="preview-stage" data-preview-stage data-selected-task-index="<%= @selected_task_index %>">
           <% if @preview_matches_selected_task %>
             <p class="preview-owner">Scaled preview for <%= @selected_task_preview.task_name %></p>
             <%= image_tag @selected_task_preview.file, class: "preview-image" %>
@@ -138,7 +274,7 @@
         </div>
       </section>
 
-    <section class="panel editor-panel">
+      <section class="panel editor-panel">
       <%= form_with model: @image_project, method: :patch, class: "stack", id: "task-editor-form" do |form| %>
         <%= hidden_field_tag :task_index, @selected_task_index %>
 
@@ -147,7 +283,7 @@
             <span>Project Name</span>
             <%= form.text_field :name %>
           </label>
-          <button type="submit" class="button primary" data-processing-label="Saving...">Save Changes</button>
+          <button type="submit" class="button primary toolbar-preview-button" name="after_save_action" value="preview_current" data-processing-label="Saving &amp; previewing...">Save &amp; Preview</button>
         </div>
 
         <div class="section-heading">
@@ -196,7 +332,7 @@
           </label>
         </div>
 
-        <details class="editor-details layers-panel">
+        <details class="editor-details layers-panel" data-persist-details-key="fine-tune-layers">
           <summary>
             <span>Fine-tune Layers</span>
             <span class="summary-meta"><%= pluralize(@task.fetch("layers", []).size, "layer") %></span>
@@ -213,6 +349,24 @@
             <% @task.fetch("layers", []).each_with_index do |layer, index| %>
               <% layer_type = layer["type"].presence || "text" %>
               <% spread_mode = layer["letterSpacingMode"].to_s == "spread" %>
+              <% relative_positioning = layer["relativeTo"].present? %>
+              <% relative_reference = @task.fetch("layers", []).find { |candidate| candidate["id"].to_s == layer["relativeTo"].to_s } %>
+              <% relative_reference_label = [relative_reference&.dig("name").presence, layer["relativeTo"]].compact_blank.join(" / ").presence || layer["relativeTo"] %>
+              <% relative_placement = layer["relativePosition"].presence || "below" %>
+              <% relative_placement_label = relative_placement.to_s == "below" ? "Below" : relative_placement.to_s.humanize.presence %>
+              <% relative_offset = layer.key?("relativeOffset") && layer["relativeOffset"].present? ? layer["relativeOffset"] : ImageProjects::Renderer::DEFAULT_RELATIVE_GAP %>
+              <% previous_relative_to = layer["previousRelativeTo"].presence %>
+              <% previous_relative_position = layer["previousRelativePosition"].presence || "below" %>
+              <% previous_relative_offset = layer.key?("previousRelativeOffset") && layer["previousRelativeOffset"].present? ? layer["previousRelativeOffset"] : ImageProjects::Renderer::DEFAULT_RELATIVE_GAP %>
+              <% relative_backup_present = previous_relative_to.present? %>
+              <% relative_setup_options = @task.fetch("layers", []).each_with_index.filter_map do |candidate, candidate_index|
+                   next if candidate_index == index
+                   candidate_id = candidate["id"].to_s
+                   next if candidate_id.blank?
+                   candidate_label = [candidate["name"].presence, candidate_id].compact_blank.join(" / ")
+                   [candidate_label.presence || candidate_id, candidate_id]
+                 end %>
+              <% layer_details_key = "layer-#{layer["id"].presence || index}-advanced" %>
               <article class="layer-card" data-controller="conditional-sections" data-conditional-sections-source-attribute-value="layer-type-source" data-conditional-sections-section-attribute-value="layer-type-section">
                 <div class="layer-header">
                   <strong><%= layer["name"].presence || "Layer #{index + 1}" %></strong>
@@ -234,14 +388,89 @@
                     <span>Layer Type</span>
                     <%= select_tag "layers[#{index}][type]", options_for_select(%w[image text], layer_type), data: { layer_type_source: true, action: "change->conditional-sections#update" } %>
                   </label>
-                  <label>
-                    <span>X</span>
-                    <%= text_field_tag "layers[#{index}][x]", layer["x"] %>
-                  </label>
-                  <label>
-                    <span>Y</span>
-                    <%= text_field_tag "layers[#{index}][y]", layer["y"] %>
-                  </label>
+                  <div class="position-section span-4 <%= "relative-position" if relative_positioning %>">
+                    <div class="position-summary">
+                      <span class="position-label">Position Mode</span>
+                      <strong><%= relative_positioning ? "Relative" : "Absolute" %></strong>
+                      <% if relative_positioning %>
+                        <p>Relative positioning. This layer is positioned relative to another layer. Y is calculated automatically.</p>
+                      <% else %>
+                        <p>Absolute positioning. Use X and Y to place this layer directly on the canvas.</p>
+                      <% end %>
+                    </div>
+
+                    <% if relative_positioning %>
+                      <%= hidden_field_tag "layers[#{index}][relativeTo]", layer["relativeTo"] %>
+                      <%= hidden_field_tag "layers[#{index}][relativePosition]", relative_placement %>
+                      <%= hidden_field_tag "layers[#{index}][y]", layer["y"], id: nil %>
+                      <div class="position-grid">
+                        <label>
+                          <span>X</span>
+                          <%= text_field_tag "layers[#{index}][x]", layer["x"] %>
+                        </label>
+                        <label class="disabled-field">
+                          <span>Auto Y</span>
+                          <%= text_field_tag "layers[#{index}][y]", layer["y"], disabled: true %>
+                          <small class="field-help">Calculated automatically.</small>
+                        </label>
+                        <div class="position-readout">
+                          <span>Relative to</span>
+                          <strong><%= relative_reference_label %></strong>
+                        </div>
+                        <div class="position-readout">
+                          <span>Placement</span>
+                          <strong><%= relative_placement_label %></strong>
+                        </div>
+                        <label>
+                          <span>Offset</span>
+                          <div class="inline-field">
+                            <%= number_field_tag "layers[#{index}][relativeOffset]", relative_offset, step: 1 %>
+                            <span>px</span>
+                          </div>
+                        </label>
+                      </div>
+                      <div class="position-actions">
+                        <%= button_tag "Switch to absolute", type: "submit", name: "editor_operation", value: "switch_to_absolute:#{index}", class: "button small", data: { processing_label: "Switching..." } %>
+                      </div>
+                    <% else %>
+                      <div class="position-grid absolute-grid">
+                        <label>
+                          <span>X</span>
+                          <%= text_field_tag "layers[#{index}][x]", layer["x"] %>
+                        </label>
+                        <label>
+                          <span>Y</span>
+                          <%= text_field_tag "layers[#{index}][y]", layer["y"] %>
+                        </label>
+                      </div>
+                      <% if relative_backup_present %>
+                        <div class="position-actions">
+                          <%= button_tag "Switch back to relative", type: "submit", name: "editor_operation", value: "switch_to_relative:#{index}", class: "button small", data: { processing_label: "Switching..." } %>
+                        </div>
+                      <% elsif relative_setup_options.any? %>
+                        <div class="position-grid">
+                          <label>
+                            <span>Relative to</span>
+                            <%= select_tag "relative_setup[#{index}][relativeTo]", options_for_select(relative_setup_options) %>
+                          </label>
+                          <label>
+                            <span>Placement</span>
+                            <%= select_tag "relative_setup[#{index}][relativePosition]", options_for_select([["Below", "below"]], "below") %>
+                          </label>
+                          <label>
+                            <span>Offset</span>
+                            <div class="inline-field">
+                              <%= number_field_tag "relative_setup[#{index}][relativeOffset]", ImageProjects::Renderer::DEFAULT_RELATIVE_GAP, step: 1 %>
+                              <span>px</span>
+                            </div>
+                          </label>
+                        </div>
+                        <div class="position-actions">
+                          <%= button_tag "Use relative positioning", type: "submit", name: "editor_operation", value: "switch_to_relative:#{index}", class: "button small", data: { processing_label: "Switching..." } %>
+                        </div>
+                      <% end %>
+                    <% end %>
+                  </div>
 
                   <label data-layer-type-section="image" <%= "hidden" unless layer_type == "image" %>>
                     <span>Source Image</span>
@@ -306,7 +535,7 @@
                   </label>
                 </div>
 
-                <details class="layer-advanced">
+                <details class="layer-advanced" data-persist-details-key="<%= layer_details_key %>">
                   <summary>Advanced layer options</summary>
                   <div class="form-grid" data-controller="conditional-sections" data-conditional-sections-source-attribute-value="letter-spacing-mode-source" data-conditional-sections-section-attribute-value="letter-spacing-mode-section" data-conditional-sections-disable-hidden-value="true">
                     <label>
@@ -332,9 +561,10 @@
                       <span>Target Text Width Ratio</span>
                       <%= number_field_tag "layers[#{index}][targetTextWidthRatio]", layer["targetTextWidthRatio"] || 0.78, min: 0.5, max: 0.95, step: 0.01, disabled: !spread_mode %>
                     </label>
-                    <label class="span-2" data-layer-type-section="text" <%= "hidden" unless layer_type == "text" %>>
-                      <span>Notes</span>
+                    <label class="span-2">
+                      <span>Import Notes</span>
                       <%= text_area_tag "layers[#{index}][notes]", layer["notes"], rows: 2 %>
+                      <small class="field-help">Notes are parsed only during Excel import. Editing this field later will not change positioning, spacing, font, or other render settings. To change the output, edit the fields above.</small>
                     </label>
                   </div>
                 </details>
@@ -343,202 +573,216 @@
           </div>
         </details>
       <% end %>
-    </section>
+      </section>
     </main>
-
-    <aside class="side-stack">
-      <section class="panel">
-        <h2>Warnings / Errors for <%= selected_task_name %></h2>
-        <% if @selected_task_status[:errors].any? || @selected_task_status[:warnings].any? %>
-          <div class="message-list">
-            <% @selected_task_status[:errors].each do |message| %>
-              <p class="error-text"><%= message %></p>
-            <% end %>
-            <% @selected_task_status[:warnings].each do |message| %>
-              <p class="warning-text"><%= message %></p>
-            <% end %>
-          </div>
-        <% else %>
-          <p class="empty-note">No current warnings or errors.</p>
-        <% end %>
-      </section>
-
-      <section class="panel">
-        <h2>Required Images</h2>
-        <% if @readiness_summary[:images].any? %>
-          <ul class="check-list compact-list">
-            <% @readiness_summary[:images].each do |item| %>
-              <li class="readiness-<%= item[:status] %>">
-                <span class="readiness-icon <%= item[:status] == "matched" ? "ok" : "missing" %>" aria-hidden="true"><%= item[:status] == "matched" ? "&#10003;".html_safe : "&#10007;".html_safe %></span>
-                <%= item[:message] %>
-              </li>
-            <% end %>
-          </ul>
-        <% else %>
-          <p class="empty-note">No image references found.</p>
-        <% end %>
-      </section>
-
-      <section class="panel">
-        <h2>Image Assets</h2>
-        <div class="asset-list">
-          <% @image_project.image_assets.each do |asset| %>
-            <div class="asset-row">
-              <% if asset.file.attached? %>
-                <%= image_tag asset.file, class: "asset-thumb" %>
-              <% end %>
-              <div class="asset-meta">
-                <span class="asset-label">Uploaded file</span>
-                <strong><%= asset.name %></strong>
-                <span>Dimensions: <%= [asset.width, asset.height].compact.join(" x ").presence || "unknown" %></span>
-                <%= form_with url: update_image_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :patch, class: "asset-alias-form" do %>
-                  <label>
-                    <span>Excel Match Name</span>
-                    <%= text_field_tag "image_asset[alias_name]", asset.alias_name.presence || asset.normalized_name %>
-                    <small class="field-help">If Excel says p1, this field should be p1.</small>
-                  </label>
-                  <%= submit_tag "Save", class: "button tiny" %>
-                <% end %>
-              </div>
-              <%= button_to "Delete", image_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :delete, class: "button tiny danger" %>
-            </div>
-          <% end %>
-          <% if @image_project.image_assets.empty? %>
-            <p class="empty-note">No image assets uploaded yet.</p>
-          <% end %>
-        </div>
-      </section>
-
-      <section class="panel font-library-panel" id="font-library">
-        <div class="panel-heading">
-          <h2>Font Library</h2>
-          <span class="summary-meta"><%= pluralize(@global_font_assets.size, "global font") %></span>
-        </div>
-
-        <div class="sidebar-section">
-          <h3>Required Fonts</h3>
-          <% if @readiness_summary[:fonts].any? %>
-            <ul class="check-list compact-list">
-              <% @readiness_summary[:fonts].each do |item| %>
-                <li class="readiness-<%= item[:status] %>">
-                  <span class="readiness-icon <%= item[:status] == "matched" ? "ok" : "warning" %>" aria-hidden="true"><%= item[:status] == "matched" ? "&#10003;".html_safe : "&#9888;".html_safe %></span>
-                  <%= item[:message] %>
-                </li>
-              <% end %>
-            </ul>
-          <% else %>
-            <p class="empty-note">No font references found.</p>
-          <% end %>
-        </div>
-
-        <% font_library_manager_open = @readiness_summary[:fonts].any? { |item| item[:status] != "matched" } %>
-        <details id="font-library-manager" class="compact-details" <%= "open" if font_library_manager_open %>>
-          <summary>Manage Font Library</summary>
-          <div class="details-body">
-            <%= form_with url: upload_global_fonts_image_project_path(@image_project, task_index: @selected_task_index), method: :post, multipart: true, id: "global-font-upload-form", class: "workflow-form compact-upload-form", data: { upload_reminder: true, upload_kind: "global-fonts", upload_action: "Upload", upload_singular: "Font", upload_plural: "Fonts" } do |form| %>
-              <%= form.file_field :fonts, multiple: true, include_hidden: false, accept: ".ttf,.otf,.woff,.woff2", id: "global-font-file-input", data: { global_font_file_input: true } %>
-              <label>
-                <span>Excel Match Name</span>
-                <%= text_field_tag "global_font_asset[match_name]", nil, placeholder: "Optional for one font" %>
-              </label>
-              <button type="submit" class="button" data-processing-label="Uploading...">Upload Font</button>
-              <p id="global-font-upload-helper" class="field-help" data-font-library-helper>Choose .ttf, .otf, .woff, or .woff2 font files.</p>
-              <p class="upload-reminder-message" hidden data-upload-reminder-message>File selected but not uploaded yet.</p>
-            <% end %>
-
-            <div class="asset-list">
-              <h3>Global Uploaded Fonts</h3>
-              <% @global_font_assets.each do |asset| %>
-                <div class="asset-row no-thumb">
-                  <div class="asset-meta">
-                    <span class="asset-label">Global</span>
-                    <strong><%= asset.name %></strong>
-                    <%= form_with url: update_global_font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :patch, class: "asset-alias-form" do %>
-                      <label>
-                        <span>Excel Match Name</span>
-                        <%= text_field_tag "global_font_asset[match_name]", asset.match_name.presence || asset.normalized_name %>
-                      </label>
-                      <%= submit_tag "Save", class: "button tiny" %>
-                    <% end %>
-                  </div>
-                  <%= button_to "Delete", global_font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :delete, class: "button tiny danger", form: { data: { turbo_confirm: "Delete this global font for all projects?" } } %>
-                </div>
-              <% end %>
-              <% if @global_font_assets.empty? %>
-                <p class="empty-note">No global fonts uploaded yet.</p>
-              <% end %>
-            </div>
-
-            <% if @project_font_assets.any? %>
-              <details class="compact-details legacy-fonts">
-                <summary>Project legacy fonts (<%= @project_font_assets.size %>)</summary>
-                <div class="asset-list">
-                  <% @project_font_assets.each do |asset| %>
-                    <div class="asset-row no-thumb">
-                      <div class="asset-meta">
-                        <span class="asset-label">Project</span>
-                        <strong><%= asset.name %></strong>
-                        <%= form_with url: update_font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :patch, class: "asset-alias-form" do %>
-                          <label>
-                            <span>Excel Match Name</span>
-                            <%= text_field_tag "font_asset[alias_name]", asset.alias_name.presence || asset.normalized_name %>
-                          </label>
-                          <%= submit_tag "Save", class: "button tiny" %>
-                        <% end %>
-                      </div>
-                      <%= button_to "Delete", font_asset_image_project_path(@image_project, asset_id: asset.id, task_index: @selected_task_index), method: :delete, class: "button tiny danger" %>
-                    </div>
-                  <% end %>
-                </div>
-              </details>
-            <% end %>
-          </div>
-        </details>
-      </section>
-
-      <% if @latest_job %>
-        <section class="panel">
-          <h2>Latest Generation</h2>
-          <p>Status: <span class="status"><%= @latest_job.status %></span></p>
-          <div class="generated-list">
-            <% @latest_job.generated_images.each do |generated| %>
-              <div class="generated-row">
-                <strong><%= generated.target_name %>.<%= generated.format %></strong>
-                <% if generated.width.present? && generated.height.present? %>
-                  <span><%= generated.width %> x <%= generated.height %></span>
-                <% end %>
-                <% if generated.errors_list.any? %>
-                  <span class="error-text"><%= generated.errors_list.join(" | ") %></span>
-                <% elsif generated.warnings_list.any? %>
-                  <span class="warning-text"><%= generated.warnings_list.join(" | ") %></span>
-                <% end %>
-              </div>
-            <% end %>
-          </div>
-        </section>
-      <% end %>
-
-      <details class="panel advanced-panel">
-        <summary>Advanced JSON</summary>
-        <%= form_with model: @image_project, method: :patch, class: "stack advanced-json-form" do |form| %>
-          <%= hidden_field_tag :task_index, @selected_task_index %>
-          <%= form.text_field :name %>
-          <%= text_area_tag :config_json_text, @image_project.config_json, rows: 18, class: "json-box" %>
-          <button type="submit" class="button" data-processing-label="Saving...">Save Raw JSON</button>
-        <% end %>
-      </details>
-
-      <section class="panel danger-zone">
-        <h2>Danger Zone</h2>
-        <p>Delete this project and all uploaded/generated files. This cannot be undone.</p>
-        <%= link_to "Delete Project", delete_confirmation_image_project_path(@image_project, return_to: image_project_path(@image_project, task_index: @selected_task_index)), class: "button danger" %>
-      </section>
-    </aside>
   </div>
 </main>
 
 <script>
   (function() {
+    var editorUiStateKey = <%= "image-project:#{@image_project.id}:task:#{@selected_task_index}:editor-ui-state".to_json.html_safe %>;
+    var lastFocusedName = null;
+    var restoringEditorUiState = false;
+
+    function editorSessionStorage() {
+      try {
+        return window.sessionStorage;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function readEditorUiState() {
+      var storage = editorSessionStorage();
+      if (!storage) {
+        return null;
+      }
+
+      try {
+        var rawState = storage.getItem(editorUiStateKey);
+        if (!rawState) {
+          return null;
+        }
+
+        var state = JSON.parse(rawState);
+        return state && typeof state === "object" ? state : null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function writeEditorUiState(state) {
+      var storage = editorSessionStorage();
+      if (!storage) {
+        return;
+      }
+
+      try {
+        storage.setItem(editorUiStateKey, JSON.stringify(state));
+      } catch (error) {
+        // UI state is best-effort only; ignore private-mode or quota failures.
+      }
+    }
+
+    function persistedDetailsElements() {
+      return Array.prototype.slice.call(document.querySelectorAll("details[data-persist-details-key]"));
+    }
+
+    function collectDetailsState() {
+      var detailsState = {};
+      persistedDetailsElements().forEach(function(details) {
+        detailsState[details.dataset.persistDetailsKey] = details.open;
+      });
+      return detailsState;
+    }
+
+    function editorFieldName(control) {
+      if (!control ||
+          !control.name ||
+          !control.closest("form#task-editor-form") ||
+          !control.matches("input:not([type='hidden']), textarea, select")) {
+        return null;
+      }
+
+      return control.name;
+    }
+
+    function activeEditorFieldName() {
+      return editorFieldName(document.activeElement) || lastFocusedName;
+    }
+
+    function persistEditorUiState(options) {
+      var state = readEditorUiState() || {};
+      var focusedName = activeEditorFieldName();
+      options = options || {};
+
+      state.scrollY = Math.max(0, Math.round(window.pageYOffset || document.documentElement.scrollTop || 0));
+      state.details = collectDetailsState();
+
+      if (focusedName) {
+        state.lastFocusedName = focusedName;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(options, "pendingRestore")) {
+        state.pendingRestore = options.pendingRestore;
+      }
+
+      writeEditorUiState(state);
+    }
+
+    function restoreEditorDetails(state) {
+      if (!state || !state.details) {
+        return;
+      }
+
+      restoringEditorUiState = true;
+      persistedDetailsElements().forEach(function(details) {
+        var key = details.dataset.persistDetailsKey;
+        if (Object.prototype.hasOwnProperty.call(state.details, key)) {
+          details.open = state.details[key] === true;
+        }
+      });
+      window.setTimeout(function() {
+        restoringEditorUiState = false;
+      }, 0);
+    }
+
+    function controlWithName(name) {
+      if (!name) {
+        return null;
+      }
+
+      var controls = document.querySelectorAll("form#task-editor-form [name]");
+      for (var index = 0; index < controls.length; index += 1) {
+        if (controls[index].name === name) {
+          return controls[index];
+        }
+      }
+
+      return null;
+    }
+
+    function restoreTargetForName(name) {
+      var control = controlWithName(name);
+      if (control) {
+        return control.closest("article.layer-card") || control;
+      }
+
+      var layerMatch = /^layers\[(\d+)\]/.exec(name || "");
+      if (layerMatch) {
+        return document.querySelectorAll("article.layer-card")[parseInt(layerMatch[1], 10)] || null;
+      }
+
+      return null;
+    }
+
+    function restoreEditorScroll(state) {
+      if (!state || state.pendingRestore !== true) {
+        return;
+      }
+
+      var savedScrollY = parseInt(state.scrollY || 0, 10);
+      var target = restoreTargetForName(state.lastFocusedName);
+
+      if (Number.isNaN(savedScrollY)) {
+        savedScrollY = 0;
+      }
+
+      window.requestAnimationFrame(function() {
+        if (savedScrollY > 0) {
+          window.scrollTo(0, savedScrollY);
+        } else if (target) {
+          target.scrollIntoView({ block: "center" });
+        }
+
+        window.requestAnimationFrame(function() {
+          var currentScrollY = window.pageYOffset || document.documentElement.scrollTop || 0;
+          if (target && (!savedScrollY || Math.abs(currentScrollY - savedScrollY) > 80)) {
+            target.scrollIntoView({ block: "center" });
+          }
+
+          state.pendingRestore = false;
+          writeEditorUiState(state);
+        });
+      });
+    }
+
+    function initializeEditorUiPersistence() {
+      var state = readEditorUiState();
+      var form = document.getElementById("task-editor-form");
+
+      restoreEditorDetails(state);
+      restoreEditorScroll(state);
+
+      persistedDetailsElements().forEach(function(details) {
+        details.addEventListener("toggle", function() {
+          if (!restoringEditorUiState) {
+            persistEditorUiState({ pendingRestore: false });
+          }
+        });
+      });
+
+      if (!form) {
+        return;
+      }
+
+      form.addEventListener("focusin", function(event) {
+        var focusedName = editorFieldName(event.target);
+        if (focusedName) {
+          lastFocusedName = focusedName;
+          persistEditorUiState({ pendingRestore: false });
+        }
+      });
+
+      form.addEventListener("submit", function() {
+        if (form.dataset.submitting === "true") {
+          return;
+        }
+
+        persistEditorUiState({ pendingRestore: true });
+      });
+    }
+
     function submitControlFor(form) {
       return form.querySelector('input[type="submit"], button[type="submit"]');
     }
@@ -578,6 +822,10 @@
 
       if (action === "preview_current") {
         return "Generating preview...";
+      }
+
+      if (action === "preview_all") {
+        return "Generating all previews...";
       }
 
       if (action === "download_zip") {
@@ -649,8 +897,8 @@
       }
     }
 
-    function downloadFetchSupported() {
-      return window.fetch && window.FormData && window.Blob && window.URL && window.URL.createObjectURL;
+    function generationFetchSupported() {
+      return window.fetch && window.FormData;
     }
 
     function csrfToken() {
@@ -658,65 +906,161 @@
       return token ? token.content : "";
     }
 
-    function isDownloadZipSubmit(form, control) {
-      return form &&
-        form.id === "task-editor-form" &&
-        control &&
-        control.name === "after_save_action" &&
-        control.value === "download_zip";
+    function asyncGenerationAction(form, control) {
+      if (!form ||
+          form.id !== "task-editor-form" ||
+          !control ||
+          control.name !== "after_save_action") {
+        return null;
+      }
+
+      if (control.value === "download_zip" ||
+          control.value === "preview_current" ||
+          control.value === "preview_all") {
+        return control.value;
+      }
+
+      return null;
     }
 
-    function filenameFromDisposition(disposition) {
-      var utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-      if (utf8Match) {
-        try {
-          return decodeURIComponent(utf8Match[1].replace(/"/g, ""));
-        } catch (error) {
-          return utf8Match[1].replace(/"/g, "");
+    function flashHasImportantAction(flash) {
+      return !!flash.querySelector("a[href], form, input, select, textarea, button:not([data-flash-close])");
+    }
+
+    function dismissFlash(flash) {
+      if (!flash || flash.classList.contains("is-dismissing")) {
+        return;
+      }
+
+      if (flash._flashDismissTimer) {
+        window.clearTimeout(flash._flashDismissTimer);
+        flash._flashDismissTimer = null;
+      }
+
+      flash.classList.add("is-dismissing");
+      window.setTimeout(function() {
+        if (flash.parentNode) {
+          flash.parentNode.removeChild(flash);
+        }
+      }, 220);
+    }
+
+    function ensureFlashCloseButton(flash) {
+      if (!flash || !flash.classList.contains("notice")) {
+        return;
+      }
+
+      if (flash.querySelector("[data-flash-close]")) {
+        return;
+      }
+
+      var closeButton = document.createElement("button");
+      closeButton.type = "button";
+      closeButton.className = "flash-close";
+      closeButton.setAttribute("aria-label", "Dismiss message");
+      closeButton.dataset.flashClose = "true";
+      closeButton.innerHTML = "&times;";
+      flash.appendChild(closeButton);
+    }
+
+    function initializeFlashMessage(flash) {
+      if (!flash || flash.dataset.flashInitialized === "true") {
+        return;
+      }
+
+      ensureFlashCloseButton(flash);
+
+      var closeButton = flash.querySelector("[data-flash-close]");
+      if (closeButton) {
+        closeButton.addEventListener("click", function() {
+          dismissFlash(flash);
+        });
+      }
+
+      if (flash.classList.contains("notice") && !flashHasImportantAction(flash)) {
+        flash._flashDismissTimer = window.setTimeout(function() {
+          dismissFlash(flash);
+        }, 5000);
+      }
+
+      flash.dataset.flashInitialized = "true";
+    }
+
+    function initializeFlashMessages() {
+      document.querySelectorAll(".flash.notice, .flash.alert").forEach(initializeFlashMessage);
+    }
+
+    function buildFlash(message, type) {
+      var flash = document.createElement("div");
+      var flashType = type || "notice";
+      var content = document.createElement("span");
+      flash.className = "flash " + flashType;
+      flash.dataset.flashMessage = "true";
+      content.className = "flash-content";
+      content.textContent = message;
+      flash.appendChild(content);
+      if (flashType === "notice") {
+        flash.setAttribute("role", "status");
+        flash.setAttribute("aria-live", "polite");
+        ensureFlashCloseButton(flash);
+      } else if (flashType === "alert") {
+        flash.setAttribute("role", "alert");
+      }
+      return flash;
+    }
+
+    function showFlash(message, type) {
+      if (!message) {
+        return;
+      }
+
+      var existing = document.querySelector(".flash.notice, .flash.alert");
+      var flash = buildFlash(message, type || "notice");
+
+      if (existing && existing.parentNode) {
+        existing.parentNode.replaceChild(flash, existing);
+      } else {
+        var header = document.querySelector(".page-header");
+        if (header && header.parentNode) {
+          header.parentNode.insertBefore(flash, header.nextSibling);
         }
       }
 
-      var filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
-      return filenameMatch ? filenameMatch[1] : null;
+      initializeFlashMessage(flash);
     }
 
-    function triggerBlobDownload(blob, filename) {
-      var url = window.URL.createObjectURL(blob);
+    function triggerUrlDownload(url) {
+      if (!url) {
+        return;
+      }
+
       var link = document.createElement("a");
       link.href = url;
-      link.download = filename || "generated-images.zip";
       link.style.display = "none";
       document.body.appendChild(link);
       link.click();
       window.setTimeout(function() {
-        window.URL.revokeObjectURL(url);
         if (link.parentNode) {
           link.parentNode.removeChild(link);
         }
       }, 0);
     }
 
-    function navigateToHtmlResponse(response) {
-      if (response.redirected && response.url) {
-        window.location.assign(response.url);
-        return Promise.resolve();
+    function jsonFromResponse(response) {
+      var contentType = response.headers.get("Content-Type") || "";
+      if (contentType.indexOf("application/json") !== -1) {
+        return response.json();
       }
 
-      return response.text().then(function(html) {
-        var contentType = response.headers.get("Content-Type") || "";
-        if (contentType.indexOf("text/html") !== -1 && html) {
-          document.open();
-          document.write(html);
-          document.close();
-        } else if (response.url) {
-          window.location.assign(response.url);
-        } else {
-          window.location.reload();
-        }
+      return response.text().then(function(text) {
+        return {
+          state: "failed",
+          message: text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() || "Request failed."
+        };
       });
     }
 
-    function submitDownloadZipWithFetch(form, control, hidden) {
+    function submitGenerationStartWithFetch(form, control, hidden, action) {
       var formData = new FormData(form);
       var method = (form.getAttribute("method") || "get").toUpperCase();
 
@@ -725,32 +1069,68 @@
         body: formData,
         credentials: "same-origin",
         headers: {
-          "Accept": "application/zip, text/html;q=0.9, */*;q=0.8",
+          "Accept": "application/json",
           "X-CSRF-Token": csrfToken()
         }
       }).then(function(response) {
-        var contentType = response.headers.get("Content-Type") || "";
-        if (response.ok && contentType.indexOf("application/zip") !== -1) {
-          return response.blob().then(function(blob) {
-            triggerBlobDownload(
-              blob,
-              filenameFromDisposition(response.headers.get("Content-Disposition") || "")
-            );
-          });
+        return jsonFromResponse(response).then(function(data) {
+          if (!response.ok) {
+            showFlash(data.message || "Request failed.", "alert");
+            return;
+          }
+
+          handleGenerationStartResponse(action, data);
+        });
+      }).catch(function(error) {
+        console.error("Generation start request failed", error);
+        showFlash("Request failed. Please try again.", "alert");
+      }).finally(function() {
+        if (form && form.id === "task-editor-form") {
+          persistEditorUiState({ pendingRestore: false });
+        }
+        resetProcessingState(form, control, hidden);
+        refreshOperationActionStates();
+      });
+    }
+
+    function handleGenerationStartResponse(action, data) {
+      if (data.message) {
+        showFlash(data.message, "notice");
+      }
+
+      if (action === "download_zip") {
+        if (data.downloadable && data.download_url) {
+          triggerUrlDownload(data.download_url);
         }
 
-        return navigateToHtmlResponse(response);
-      }).catch(function(error) {
-        console.error("Download ZIP request failed", error);
-      }).finally(function() {
-        resetProcessingState(form, control, hidden);
-      });
+        if (data.job_id || data.status_url) {
+          var zipPanel = ensureZipStatusPanel(data);
+          updateZipStatusPanel(zipPanel, data);
+          if (zipPanel.dataset.poll === "true") {
+            pollZipStatusPanel(zipPanel);
+          }
+        }
+        return;
+      }
+
+      if (data.preview_url) {
+        updatePreviewStage(data.preview_url);
+      }
+
+      if (data.job_id || data.status_url) {
+        var previewPanel = ensurePreviewStatusPanel(data);
+        updatePreviewStatusPanel(previewPanel, data);
+        if (previewPanel.dataset.poll === "true") {
+          pollPreviewStatusPanel(previewPanel);
+        }
+      }
     }
 
     function initializeProcessingState() {
       document.addEventListener("submit", function(event) {
         var form = event.target;
         var submitter = submitterForEvent(event);
+        var asyncAction = asyncGenerationAction(form, submitter);
 
         if (form.dataset.submitting === "true") {
           event.preventDefault();
@@ -761,15 +1141,552 @@
         var hidden = preserveSubmitterValue(form, submitter);
         setProcessingState(form, submitter);
 
-        if (isDownloadZipSubmit(form, submitter)) {
-          if (downloadFetchSupported()) {
+        if (asyncAction) {
+          if (generationFetchSupported()) {
             event.preventDefault();
-            submitDownloadZipWithFetch(form, submitter, hidden);
+            submitGenerationStartWithFetch(form, submitter, hidden, asyncAction);
           } else {
             window.setTimeout(function() {
               resetProcessingState(form, submitter, hidden);
             }, 30000);
           }
+        }
+      });
+    }
+
+    function humanizeStatus(status) {
+      return (status || "")
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, function(letter) { return letter.toUpperCase(); });
+    }
+
+    function operationStatusLabel(kind, status) {
+      if (status === "queued" || status === "running") {
+        if (kind === "selected-preview") {
+          return "Preview generation running";
+        }
+        if (kind === "preview-all") {
+          return "Preview all running";
+        }
+        if (kind === "zip") {
+          return "ZIP generation running";
+        }
+      }
+
+      return humanizeStatus(status);
+    }
+
+    function previewPanelStatusLabel(data) {
+      if (activePreviewStatus(data.status)) {
+        return data.scope === "all_task_previews" ? "Preview all running" : "Preview generation running";
+      }
+
+      return humanizeStatus(data.status);
+    }
+
+    function zipPanelStatusLabel(data) {
+      return activeZipStatus(data.status) ? "ZIP generation running" : humanizeStatus(data.status);
+    }
+
+    function activeZipStatus(status) {
+      return status === "queued" || status === "running";
+    }
+
+    function openBackgroundStatusFor(status, panel) {
+      if (!(status === "queued" || status === "running" || status === "failed")) {
+        return;
+      }
+
+      var statusDetails = panel ? panel.closest("[data-background-status-details]") : document.querySelector("[data-background-status-details]");
+      if (statusDetails) {
+        statusDetails.open = true;
+      }
+    }
+
+    function setStatusSpinner(panel, selector, active) {
+      var spinner = panel ? panel.querySelector(selector) : null;
+      if (spinner) {
+        spinner.hidden = !active;
+      }
+    }
+
+    function terminalZipStatus(status) {
+      return status === "completed" || status === "completed_with_errors" || status === "failed";
+    }
+
+    function operationButtons(action) {
+      return Array.prototype.slice.call(document.querySelectorAll("[data-operation-action='" + action + "']"));
+    }
+
+    function operationButtonReady(button) {
+      return button.dataset.ready !== "false";
+    }
+
+    function setOperationButtonState(action, options) {
+      operationButtons(action).forEach(function(button) {
+        if (!button.dataset.defaultLabel) {
+          button.dataset.defaultLabel = labelFor(button);
+        }
+
+        if (options.label) {
+          setLabel(button, options.label);
+        } else {
+          setLabel(button, button.dataset.defaultLabel);
+        }
+
+        if (options.processingLabel) {
+          button.dataset.processingLabel = options.processingLabel;
+        }
+
+        button.disabled = options.disabled === true || !operationButtonReady(button);
+      });
+    }
+
+    function restoreOperationButtonState(action) {
+      setOperationButtonState(action, { disabled: false });
+    }
+
+    function updateOperationStatus(kind, status, detail) {
+      var chip = document.querySelector("[data-operation-status-chip='" + kind + "']");
+      var text = document.querySelector("[data-operation-status-text='" + kind + "']");
+      var detailElement = document.querySelector("[data-operation-status-detail='" + kind + "']");
+
+      if (chip && status) {
+        chip.className = chip.className.replace(/\bstatus-[^\s]+/g, "").trim();
+        chip.classList.add("operation-status-chip", "status-" + status);
+        chip.dataset.status = status;
+      }
+
+      if (text && status) {
+        text.textContent = operationStatusLabel(kind, status);
+      }
+
+      if (detailElement && detail) {
+        detailElement.textContent = detail;
+      }
+    }
+
+    function currentSelectedTaskIndex() {
+      var stage = document.querySelector("[data-preview-stage]");
+      return stage ? String(stage.dataset.selectedTaskIndex || "") : "";
+    }
+
+    function taskIndexesFromData(data) {
+      return (data.task_indexes || []).map(function(index) {
+        return String(index);
+      });
+    }
+
+    function taskIndexesFromPanel(panel) {
+      if (!panel || !panel.dataset.taskIndexes) {
+        return [];
+      }
+
+      try {
+        var parsed = JSON.parse(panel.dataset.taskIndexes);
+        return Array.isArray(parsed) ? parsed.map(String) : [];
+      } catch (error) {
+        return [];
+      }
+    }
+
+    function previewProgressDetail(data) {
+      var generated = data.generated_count || 0;
+      var total = data.previewable_count || data.total_count || 0;
+      return generated + "/" + total + " generated";
+    }
+
+    function ensureZipStatusPanel(data) {
+      var panel = document.querySelector("[data-zip-status-panel]");
+      if (panel) {
+        if (data.status_url) {
+          panel.dataset.statusUrl = data.status_url;
+        }
+        return panel;
+      }
+
+      var container = document.querySelector("[data-zip-status-container]");
+      if (!container) {
+        return document.createElement("div");
+      }
+
+      panel = document.createElement("div");
+      panel.className = "zip-status-panel";
+      panel.dataset.zipStatusPanel = "true";
+      panel.dataset.statusUrl = data.status_url || "";
+      panel.dataset.pollInterval = "3000";
+      panel.innerHTML =
+        '<div class="zip-status-header">' +
+          '<div><span class="step-label">ZIP</span><h3 class="status-title"><span class="status-spinner" data-zip-status-spinner aria-hidden="true" hidden></span><span data-zip-status-text></span></h3></div>' +
+          '<span class="zip-progress"><span data-zip-generated-count>0</span> / <span data-zip-total-count>0</span></span>' +
+        '</div>' +
+        '<p data-zip-status-message></p>' +
+        '<p class="muted">Started: <span data-zip-started-at>not started</span></p>' +
+        '<div class="zip-status-errors" data-zip-error-summary hidden></div>' +
+        '<a class="button success" data-zip-download-link hidden>Download ZIP</a>';
+      container.replaceChildren(panel);
+      return panel;
+    }
+
+    function setZipActionState(data) {
+      if (activeZipStatus(data.status)) {
+        setOperationButtonState("zip", {
+          label: "Generate ZIP (All Images)",
+          disabled: true,
+          processingLabel: "Checking ZIP status..."
+        });
+        updateOperationStatus("zip", data.status, (data.generated_image_count || 0) + "/" + (data.total_task_count || 0) + " generated");
+        return;
+      }
+
+      if (data.downloadable) {
+        setOperationButtonState("zip", {
+          label: "Download ZIP (All Images)",
+          disabled: false,
+          processingLabel: "Preparing ZIP download..."
+        });
+        updateOperationStatus("zip", "ready", "download available");
+      } else if (terminalZipStatus(data.status)) {
+        setOperationButtonState("zip", {
+          label: "Generate ZIP (All Images)",
+          disabled: false,
+          processingLabel: "Starting ZIP generation..."
+        });
+        updateOperationStatus("zip", data.status, data.status === "failed" ? "last run failed" : "ready to generate");
+      } else {
+        restoreOperationButtonState("zip");
+      }
+    }
+
+    function renderZipMessages(container, messages) {
+      if (!container) {
+        return;
+      }
+
+      container.innerHTML = "";
+      messages = messages || [];
+      container.hidden = messages.length === 0;
+      messages.forEach(function(message) {
+        var paragraph = document.createElement("p");
+        paragraph.className = "error-text";
+        paragraph.textContent = message;
+        container.appendChild(paragraph);
+      });
+    }
+
+    function formatTimestamp(value) {
+      if (!value) {
+        return "not started";
+      }
+
+      var date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return value;
+      }
+
+      return date.toLocaleString();
+    }
+
+    function updateZipStatusPanel(panel, data) {
+      var statusText = panel.querySelector("[data-zip-status-text]");
+      var generatedCount = panel.querySelector("[data-zip-generated-count]");
+      var totalCount = panel.querySelector("[data-zip-total-count]");
+      var message = panel.querySelector("[data-zip-status-message]");
+      var startedAt = panel.querySelector("[data-zip-started-at]");
+      var errorSummary = panel.querySelector("[data-zip-error-summary]");
+      var downloadLink = panel.querySelector("[data-zip-download-link]");
+
+      panel.className = panel.className.replace(/\bstatus-[^\s]+/g, "").trim();
+      panel.classList.add("zip-status-panel", "status-" + data.status);
+      panel.dataset.status = data.status;
+
+      if (statusText) {
+        statusText.textContent = zipPanelStatusLabel(data);
+      }
+      if (generatedCount) {
+        generatedCount.textContent = data.generated_image_count || 0;
+      }
+      if (totalCount) {
+        totalCount.textContent = data.total_task_count || 0;
+      }
+      if (startedAt) {
+        startedAt.textContent = formatTimestamp(data.started_at);
+      }
+
+      if (message) {
+        if (activeZipStatus(data.status)) {
+          message.textContent = "This may take a while for many images. You can leave this page and come back later.";
+        } else if (data.downloadable) {
+          message.textContent = "ZIP is ready for the current project inputs.";
+        } else if (data.status === "failed") {
+          message.textContent = "ZIP generation failed. Review the error summary and generate again when ready.";
+        }
+      }
+
+      renderZipMessages(errorSummary, data.errors_summary || []);
+
+      if (downloadLink) {
+        if (data.downloadable && data.download_url) {
+          downloadLink.href = data.download_url;
+          downloadLink.hidden = false;
+        } else {
+          downloadLink.hidden = true;
+        }
+      }
+
+      setZipActionState(data);
+      panel.dataset.poll = activeZipStatus(data.status) ? "true" : "false";
+      setStatusSpinner(panel, "[data-zip-status-spinner]", activeZipStatus(data.status));
+      openBackgroundStatusFor(data.status, panel);
+    }
+
+    function pollZipStatusPanel(panel) {
+      if (panel.dataset.poll !== "true" || !panel.dataset.statusUrl) {
+        return;
+      }
+
+      fetch(panel.dataset.statusUrl, {
+        credentials: "same-origin",
+        headers: { "Accept": "application/json" }
+      }).then(function(response) {
+        if (!response.ok) {
+          throw new Error("Status request failed");
+        }
+        return response.json();
+      }).then(function(data) {
+        updateZipStatusPanel(panel, data);
+      }).catch(function(error) {
+        console.error("ZIP status polling failed", error);
+      }).finally(function() {
+        if (panel.dataset.poll === "true") {
+          window.setTimeout(function() {
+            pollZipStatusPanel(panel);
+          }, parseInt(panel.dataset.pollInterval || "3000", 10));
+        }
+      });
+    }
+
+    function initializeZipStatusPolling() {
+      document.querySelectorAll("[data-zip-status-panel]").forEach(function(panel) {
+        if (panel.dataset.poll === "true") {
+          pollZipStatusPanel(panel);
+        }
+      });
+    }
+
+    function refreshOperationActionStates() {
+      var zipPanel = document.querySelector("[data-zip-status-panel]");
+      if (zipPanel && zipPanel.dataset.status) {
+        setZipActionState({
+          status: zipPanel.dataset.status,
+          generated_image_count: parseInt((zipPanel.querySelector("[data-zip-generated-count]") || {}).textContent || "0", 10),
+          total_task_count: parseInt((zipPanel.querySelector("[data-zip-total-count]") || {}).textContent || "0", 10),
+          downloadable: !!zipPanel.querySelector("[data-zip-download-link]:not([hidden])")
+        });
+      }
+
+      var previewPanel = document.querySelector("[data-preview-status-panel]");
+      if (previewPanel && previewPanel.dataset.status) {
+        setPreviewActionState({
+          status: previewPanel.dataset.status,
+          scope: previewPanel.dataset.scope,
+          task_indexes: taskIndexesFromPanel(previewPanel),
+          generated_count: parseInt((previewPanel.querySelector("[data-preview-generated-count]") || {}).textContent || "0", 10),
+          previewable_count: parseInt((previewPanel.querySelector("[data-preview-total-count]") || {}).textContent || "0", 10)
+        });
+      }
+    }
+
+    function activePreviewStatus(status) {
+      return status === "queued" || status === "running";
+    }
+
+    function setPreviewActionState(data) {
+      var active = activePreviewStatus(data.status);
+      var selectedIndex = currentSelectedTaskIndex();
+      var taskIndexes = taskIndexesFromData(data);
+      var coversSelected = data.scope === "selected_task_preview" || taskIndexes.indexOf(selectedIndex) !== -1;
+
+      if (active && coversSelected) {
+        setOperationButtonState("selected-preview", {
+          label: "Preview Selected Image",
+          disabled: true,
+          processingLabel: "Checking preview status..."
+        });
+        updateOperationStatus("selected-preview", data.status, previewProgressDetail(data));
+      } else if (!active && coversSelected) {
+        restoreOperationButtonState("selected-preview");
+        updateOperationStatus("selected-preview", data.preview_url ? "current" : data.status, data.preview_url ? "up to date" : previewProgressDetail(data));
+      }
+
+      if (data.scope === "all_task_previews") {
+        if (active) {
+          setOperationButtonState("preview-all", {
+            label: "Preview All Images",
+            disabled: true,
+            processingLabel: "Checking preview status..."
+          });
+          updateOperationStatus("preview-all", data.status, previewProgressDetail(data));
+        } else {
+          restoreOperationButtonState("preview-all");
+          updateOperationStatus("preview-all", data.status, previewProgressDetail(data));
+        }
+      }
+    }
+
+    function ensurePreviewStatusPanel(data) {
+      var panel = document.querySelector("[data-preview-status-panel]");
+      if (panel) {
+        if (data.status_url) {
+          panel.dataset.statusUrl = data.status_url;
+        }
+        return panel;
+      }
+
+      var container = document.querySelector("[data-preview-status-container]");
+      if (!container) {
+        return document.createElement("div");
+      }
+
+      var stage = document.querySelector("[data-preview-stage]");
+      panel = document.createElement("div");
+      panel.className = "preview-status-panel";
+      panel.dataset.previewStatusPanel = "true";
+      panel.dataset.statusUrl = data.status_url || "";
+      panel.dataset.pollInterval = "3000";
+      panel.dataset.selectedTaskIndex = stage ? stage.dataset.selectedTaskIndex : "";
+      panel.dataset.scope = data.scope || "";
+      panel.dataset.taskIndexes = JSON.stringify(data.task_indexes || []);
+      panel.innerHTML =
+        '<div class="preview-status-header">' +
+          '<div><span class="step-label">Preview</span><h3 class="status-title"><span class="status-spinner" data-preview-status-spinner aria-hidden="true" hidden></span><span data-preview-status-text></span></h3></div>' +
+          '<span class="preview-progress"><span data-preview-generated-count>0</span> <span class="muted">/</span> <span data-preview-total-count>0</span></span>' +
+        '</div>' +
+        '<p data-preview-status-message></p>' +
+        '<p class="muted">Tasks: <span data-preview-reused-count>0</span> reused, <span data-preview-skipped-count>0</span> skipped, <span data-preview-failed-count>0</span> failed.</p>' +
+        '<div class="preview-status-errors" data-preview-error-summary hidden></div>';
+      container.replaceChildren(panel);
+      return panel;
+    }
+
+    function updatePreviewStage(previewUrl) {
+      var stage = document.querySelector("[data-preview-stage]");
+      if (!stage || !previewUrl) {
+        return;
+      }
+
+      var selectedName = document.querySelector(".current-task-name strong");
+      stage.innerHTML = "";
+
+      var owner = document.createElement("p");
+      owner.className = "preview-owner";
+      owner.textContent = "Scaled preview for " + (selectedName ? selectedName.textContent : "selected image");
+
+      var image = document.createElement("img");
+      image.className = "preview-image";
+      image.src = previewUrl;
+      image.alt = "";
+
+      stage.appendChild(owner);
+      stage.appendChild(image);
+    }
+
+    function renderPreviewMessages(container, messages) {
+      if (!container) {
+        return;
+      }
+
+      container.innerHTML = "";
+      messages = messages || [];
+      container.hidden = messages.length === 0;
+      messages.forEach(function(message) {
+        var paragraph = document.createElement("p");
+        paragraph.className = "error-text";
+        paragraph.textContent = message;
+        container.appendChild(paragraph);
+      });
+    }
+
+    function updatePreviewStatusPanel(panel, data) {
+      var statusText = panel.querySelector("[data-preview-status-text]");
+      var generatedCount = panel.querySelector("[data-preview-generated-count]");
+      var reusedCount = panel.querySelector("[data-preview-reused-count]");
+      var totalCount = panel.querySelector("[data-preview-total-count]");
+      var skippedCount = panel.querySelector("[data-preview-skipped-count]");
+      var failedCount = panel.querySelector("[data-preview-failed-count]");
+      var message = panel.querySelector("[data-preview-status-message]");
+      var errorSummary = panel.querySelector("[data-preview-error-summary]");
+
+      panel.className = panel.className.replace(/\bstatus-[^\s]+/g, "").trim();
+      panel.classList.add("preview-status-panel", "status-" + data.status);
+      panel.dataset.status = data.status;
+      panel.dataset.scope = data.scope || panel.dataset.scope || "";
+      panel.dataset.taskIndexes = JSON.stringify(data.task_indexes || taskIndexesFromPanel(panel));
+
+      if (statusText) {
+        statusText.textContent = previewPanelStatusLabel(data);
+      }
+      if (generatedCount) {
+        generatedCount.textContent = data.generated_count || 0;
+      }
+      if (reusedCount) {
+        reusedCount.textContent = data.reused_count || 0;
+      }
+      if (totalCount) {
+        totalCount.textContent = data.previewable_count || data.total_count || 0;
+      }
+      if (skippedCount) {
+        skippedCount.textContent = data.skipped_count || 0;
+      }
+      if (failedCount) {
+        failedCount.textContent = data.failed_count || 0;
+      }
+      if (message) {
+        message.textContent = data.message || (activePreviewStatus(data.status) ? "Preview is being generated..." : "Preview generation status is available.");
+      }
+
+      renderPreviewMessages(errorSummary, data.errors_summary || []);
+
+      if (data.preview_url && data.input_signature_matches !== false) {
+        updatePreviewStage(data.preview_url);
+      }
+
+      setPreviewActionState(data);
+      panel.dataset.poll = activePreviewStatus(data.status) ? "true" : "false";
+      setStatusSpinner(panel, "[data-preview-status-spinner]", activePreviewStatus(data.status));
+      openBackgroundStatusFor(data.status, panel);
+    }
+
+    function pollPreviewStatusPanel(panel) {
+      if (panel.dataset.poll !== "true" || !panel.dataset.statusUrl) {
+        return;
+      }
+
+      fetch(panel.dataset.statusUrl, {
+        credentials: "same-origin",
+        headers: { "Accept": "application/json" }
+      }).then(function(response) {
+        if (!response.ok) {
+          throw new Error("Status request failed");
+        }
+        return response.json();
+      }).then(function(data) {
+        updatePreviewStatusPanel(panel, data);
+      }).catch(function(error) {
+        console.error("Preview status polling failed", error);
+      }).finally(function() {
+        if (panel.dataset.poll === "true") {
+          window.setTimeout(function() {
+            pollPreviewStatusPanel(panel);
+          }, parseInt(panel.dataset.pollInterval || "3000", 10));
+        }
+      });
+    }
+
+    function initializePreviewStatusPolling() {
+      document.querySelectorAll("[data-preview-status-panel]").forEach(function(panel) {
+        if (panel.dataset.poll === "true") {
+          pollPreviewStatusPanel(panel);
         }
       });
     }
@@ -874,6 +1791,9 @@
       if (manager) {
         manager.open = true;
       }
+      if (panel && panel.tagName && panel.tagName.toLowerCase() === "details") {
+        panel.open = true;
+      }
 
       if (helper && options.fromLayerControl) {
         helper.textContent = "Choose font files below.";
@@ -910,14 +1830,24 @@
 
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", function() {
+        initializeFlashMessages();
+        initializeEditorUiPersistence();
         initializeUploadReminders();
         initializeFontLibraryControls();
         initializeProcessingState();
+        initializeZipStatusPolling();
+        initializePreviewStatusPolling();
+        refreshOperationActionStates();
       });
     } else {
+      initializeFlashMessages();
+      initializeEditorUiPersistence();
       initializeUploadReminders();
       initializeFontLibraryControls();
       initializeProcessingState();
+      initializeZipStatusPolling();
+      initializePreviewStatusPolling();
+      refreshOperationActionStates();
     }
   })();
 </script>

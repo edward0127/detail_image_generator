@@ -64,6 +64,37 @@ class ImageProjects::ExcelImporterTest < ActiveSupport::TestCase
     assert_equal false, layer["bold"]
   end
 
+  test "compact Chinese partial bold note converts matching word to inline bold" do
+    layer = { "text" => "DESIGN HIGHLIGHTS", "bold" => false }
+
+    ImageProjects::ExcelParsers.apply_notes_to_text_layer!(layer, "其中DESIGN 这个单词加粗")
+
+    assert_equal "**DESIGN** HIGHLIGHTS", layer["text"]
+    assert_equal false, layer["bold"]
+  end
+
+  test "partial bold note tolerates a minor typo in the target word" do
+    layer = { "text" => "DESIGN HIGHLIGHTS", "bold" => false }
+    warnings = []
+
+    ImageProjects::ExcelParsers.apply_notes_to_text_layer!(layer, "其中DEISIGN 这个单词加粗", warnings: warnings)
+
+    assert_equal "**DESIGN** HIGHLIGHTS", layer["text"]
+    assert_equal false, layer["bold"]
+    assert_includes warnings, 'Partial bold note target "DEISIGN" was matched to "DESIGN".'
+  end
+
+  test "ambiguous partial bold typo does not silently bold a word" do
+    layer = { "text" => "BRAID BROND", "bold" => false }
+    warnings = []
+
+    ImageProjects::ExcelParsers.apply_notes_to_text_layer!(layer, "make BRAND bold", warnings: warnings)
+
+    assert_equal "BRAID BROND", layer["text"]
+    assert_equal false, layer["bold"]
+    assert_includes warnings, ImageProjects::ExcelParsers::PARTIAL_BOLD_UNMATCHED_WARNING
+  end
+
   test "English partial bold note converts matching word to inline bold" do
     layer = { "text" => "DESIGN HIGHLIGHTS", "bold" => false }
 
@@ -124,11 +155,17 @@ class ImageProjects::ExcelImporterTest < ActiveSupport::TestCase
 
   test "position parser supports bilingual relative descriptions" do
     chinese = ImageProjects::ExcelParsers.parse_position("在图层0下面距离 120 px")
+    compact_chinese = ImageProjects::ExcelParsers.parse_position("\u5728\u56FE\u5C420\u4E0B\u9762\u8DDD\u79BB120PX")
     english = ImageProjects::ExcelParsers.parse_position("120 px below layer 0")
 
     assert_equal "layer0", chinese["relativeTo"]
+    assert_equal "below", chinese["relativePosition"]
     assert_equal 120, chinese["relativeOffset"]
+    assert_equal "layer0", compact_chinese["relativeTo"]
+    assert_equal "below", compact_chinese["relativePosition"]
+    assert_equal 120, compact_chinese["relativeOffset"]
     assert_equal "layer0", english["relativeTo"]
+    assert_equal "below", english["relativePosition"]
     assert_equal 120, english["relativeOffset"]
   end
 

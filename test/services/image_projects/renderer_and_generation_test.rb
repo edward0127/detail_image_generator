@@ -139,6 +139,58 @@ class ImageProjects::RendererAndGenerationTest < ActiveSupport::TestCase
     assert_includes entries, "Back.png"
   end
 
+  test "batch generation can run against an existing queued generation job" do
+    project = ImageProject.create!(name: "Existing Job Batch Project")
+    project.update_config!(
+      "projectName" => "Existing Job Batch Project",
+      "tasks" => [
+        text_task("Front", 80, 50),
+        text_task("Back", 80, 50)
+      ]
+    )
+    signature = ImageProjects::RenderInputSignature.full_zip(project)
+    queued_job = project.image_generation_jobs.create!(
+      status: "queued",
+      generation_scope: ImageGenerationJob::ALL_TASKS_ZIP_SCOPE,
+      input_signature: signature
+    )
+
+    renderer = fake_batch_renderer
+    with_singleton_method_stub(ImageProjects::Renderer, :new, ->(_project) { renderer }) do
+      job = ImageProjects::GenerationRunner.call(project, job: queued_job)
+
+      assert_equal queued_job.id, job.id
+      assert_equal "completed", job.status
+      assert_equal 1, project.image_generation_jobs.count
+      assert_equal [ "Back.png", "Front.png" ], zip_entries(job.zip_file.download).sort
+    end
+  ensure
+    renderer&.cleanup
+  end
+
+  test "batch generation reuses renderer browser batch" do
+    project = ImageProject.create!(name: "Renderer Reuse Project")
+    project.update_config!(
+      "projectName" => "Renderer Reuse Project",
+      "tasks" => [
+        text_task("Front", 80, 50),
+        text_task("Back", 80, 50)
+      ]
+    )
+    renderer = fake_batch_renderer
+
+    with_singleton_method_stub(ImageProjects::Renderer, :new, ->(_project) { renderer }) do
+      job = ImageProjects::GenerationRunner.call(project)
+
+      assert_equal "completed", job.status
+      assert_equal true, renderer.batch_used
+      assert_equal [ "Front", "Back" ], renderer.rendered_names
+      assert_equal [ "Back.png", "Front.png" ], zip_entries(job.zip_file.download).sort
+    end
+  ensure
+    renderer&.cleanup
+  end
+
   test "batch generation zip uses P1 and P2 target names with task formats" do
     project = ImageProject.create!(name: "P1 P2 Zip Project")
     p1 = text_task("P1", 80, 50)
@@ -187,6 +239,42 @@ class ImageProjects::RendererAndGenerationTest < ActiveSupport::TestCase
     assert_equal [ "P1.png", "P2.png" ], zip_entries(new_job.zip_file.download).sort
   end
 
+  test "older finishing job does not purge newer completed zip" do
+    project = ImageProject.create!(name: "Out Of Order Completion Project")
+    project.update_config!(
+      "projectName" => "Out Of Order Completion Project",
+      "tasks" => [
+        text_task("P1", 80, 50)
+      ]
+    )
+    old_job = project.image_generation_jobs.create!(
+      status: "queued",
+      generation_scope: ImageGenerationJob::ALL_TASKS_ZIP_SCOPE,
+      input_signature: "old-signature",
+      created_at: 2.minutes.ago,
+      updated_at: 2.minutes.ago
+    )
+    newer_job = project.image_generation_jobs.create!(
+      status: "completed",
+      generation_scope: ImageGenerationJob::ALL_TASKS_ZIP_SCOPE,
+      input_signature: "new-signature",
+      started_at: 1.minute.ago,
+      finished_at: Time.current
+    )
+    newer_job.zip_file.attach(io: StringIO.new("newer zip"), filename: "newer.zip", content_type: "application/zip")
+    renderer = fake_batch_renderer
+
+    with_singleton_method_stub(ImageProjects::Renderer, :new, ->(_project) { renderer }) do
+      ImageProjects::GenerationRunner.call(project, job: old_job)
+    end
+
+    assert ImageGenerationJob.exists?(newer_job.id)
+    assert newer_job.reload.zip_file.attached?
+    assert_equal "newer zip", newer_job.zip_file.download
+  ensure
+    renderer&.cleanup
+  end
+
   test "current task generation creates only the selected task and zip entry" do
     project = ImageProject.create!(name: "Current Task Project")
     project.update_config!(
@@ -198,11 +286,17 @@ class ImageProjects::RendererAndGenerationTest < ActiveSupport::TestCase
       ]
     )
 
-    job = ImageProjects::GenerationRunner.call(project, task_indexes: [ 1 ])
+    renderer = fake_batch_renderer
+    with_singleton_method_stub(ImageProjects::Renderer, :new, ->(_project) { renderer }) do
+      job = ImageProjects::GenerationRunner.call(project, task_indexes: [ 1 ])
 
-    assert_equal "completed", job.status
-    assert_equal [ "Back" ], job.generated_images.pluck(:target_name)
-    assert_equal [ "Back.png" ], zip_entries(job.zip_file.download)
+      assert_equal "completed", job.status
+      assert_equal [ "Back" ], job.generated_images.pluck(:target_name)
+      assert_equal [ "Back.png" ], zip_entries(job.zip_file.download)
+      assert_equal [ "Back" ], renderer.rendered_names
+    end
+  ensure
+    renderer&.cleanup
   end
 
   test "current task generation succeeds for P1 when P2 image is missing" do
@@ -217,12 +311,18 @@ class ImageProjects::RendererAndGenerationTest < ActiveSupport::TestCase
       ]
     )
 
-    job = ImageProjects::GenerationRunner.call(project, task_indexes: [ 0 ])
+    renderer = fake_batch_renderer
+    with_singleton_method_stub(ImageProjects::Renderer, :new, ->(_project) { renderer }) do
+      job = ImageProjects::GenerationRunner.call(project, task_indexes: [ 0 ])
 
-    assert_equal "completed", job.status
-    assert_equal [ "P1" ], job.generated_images.pluck(:target_name)
-    assert_empty job.generated_images.first.errors_list
-    assert_equal [ "P1.png" ], zip_entries(job.zip_file.download)
+      assert_equal "completed", job.status
+      assert_equal [ "P1" ], job.generated_images.pluck(:target_name)
+      assert_empty job.generated_images.first.errors_list
+      assert_equal [ "P1.png" ], zip_entries(job.zip_file.download)
+      assert_equal [ "P1" ], renderer.rendered_names
+    end
+  ensure
+    renderer&.cleanup
   end
 
   test "all task generation continues when P2 image is missing" do
@@ -339,6 +439,62 @@ class ImageProjects::RendererAndGenerationTest < ActiveSupport::TestCase
       "align" => "center",
       "opacity" => 1
     }
+  end
+
+  def fake_batch_renderer
+    test_case = self
+
+    Class.new do
+      attr_reader :rendered_names
+      attr_accessor :batch_used
+
+      define_method(:initialize) do
+        @test_case = test_case
+        @rendered_names = []
+        @tempfiles = []
+        @batch_used = false
+      end
+
+      define_method(:with_reused_browser) do |&block|
+        self.batch_used = true
+        block.call
+      end
+
+      define_method(:render_final) do |task|
+        @rendered_names << task["targetName"]
+        tempfile = Tempfile.new([ task["targetName"], ".png" ])
+        tempfile.binmode
+        tempfile.write(Base64.decode64(ImageProjects::RendererAndGenerationTest::PNG_1X1))
+        tempfile.close
+        @tempfiles << tempfile
+
+        ImageProjects::Renderer::RenderResult.new(
+          path: tempfile.path,
+          filename: "#{task["targetName"]}.png",
+          format: "png",
+          width: 1,
+          height: 1,
+          warnings: [],
+          errors: []
+        )
+      end
+
+      define_method(:cleanup) do
+        @tempfiles.each do |tempfile|
+          File.delete(tempfile.path) if File.exist?(tempfile.path)
+        end
+      end
+    end.new
+  end
+
+  def with_singleton_method_stub(object, method_name, replacement)
+    original_method = object.method(method_name)
+    object.define_singleton_method(method_name, &replacement)
+    yield
+  ensure
+    object.define_singleton_method(method_name) do |*args, **kwargs, &block|
+      original_method.call(*args, **kwargs, &block)
+    end
   end
 
   def zip_entries(bytes)

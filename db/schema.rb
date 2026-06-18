@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_06_16_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_06_17_020000) do
   create_table "active_storage_attachments", force: :cascade do |t|
     t.bigint "blob_id", null: false
     t.datetime "created_at", null: false
@@ -116,6 +116,29 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_16_010000) do
     t.datetime "updated_at", null: false
   end
 
+  create_table "preview_generation_jobs", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.text "error_messages", default: "[]", null: false
+    t.integer "failed_count", default: 0, null: false
+    t.datetime "finished_at"
+    t.integer "generated_count", default: 0, null: false
+    t.integer "image_project_id", null: false
+    t.string "input_signature"
+    t.integer "previewable_count", default: 0, null: false
+    t.integer "reused_count", default: 0, null: false
+    t.string "scope", null: false
+    t.integer "skipped_count", default: 0, null: false
+    t.datetime "started_at"
+    t.string "status", default: "queued", null: false
+    t.text "task_indexes_json"
+    t.text "task_signatures_json"
+    t.integer "total_count", default: 0, null: false
+    t.datetime "updated_at", null: false
+    t.text "warnings", default: "[]", null: false
+    t.index ["image_project_id", "scope", "input_signature", "status"], name: "idx_preview_jobs_project_scope_signature_status"
+    t.index ["image_project_id"], name: "index_preview_generation_jobs_on_image_project_id"
+  end
+
   create_table "task_previews", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "format"
@@ -138,5 +161,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_16_010000) do
   add_foreign_key "generated_images", "image_generation_jobs"
   add_foreign_key "image_assets", "image_projects"
   add_foreign_key "image_generation_jobs", "image_projects"
+  add_foreign_key "preview_generation_jobs", "image_projects"
   add_foreign_key "task_previews", "image_projects"
 end

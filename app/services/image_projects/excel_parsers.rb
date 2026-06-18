@@ -1,6 +1,9 @@
 module ImageProjects
   module ExcelParsers
     ColorResult = Struct.new(:background_color, :transparent, :warning, keyword_init: true)
+    PartialBoldMatch = Struct.new(:status, :phrase, :warning, keyword_init: true)
+
+    PARTIAL_BOLD_UNMATCHED_WARNING = "Partial bold note was found, but the target word could not be matched safely.".freeze
 
     module_function
 
@@ -104,7 +107,7 @@ module ImageProjects
       }
     end
 
-    def apply_notes_to_text_layer!(layer, notes)
+    def apply_notes_to_text_layer!(layer, notes, warnings: nil)
       text = notes.to_s.strip
       return if text.blank?
 
@@ -122,24 +125,43 @@ module ImageProjects
         layer["letterSpacingRatio"] = 0.3 if layer["letterSpacingRatio"].to_f.zero?
       end
 
-      partial_bold_status = apply_partial_bold_note!(layer, text)
+      partial_bold_status = apply_partial_bold_note!(layer, text, warnings: warnings)
       layer["bold"] = true if partial_bold_status.nil? && whole_layer_bold_note?(text)
       layer["autoWrap"] = true if text.include?("自动换行") || text.match?(/auto\s*wrap|wrap\s+text/i)
     end
 
-    def apply_partial_bold_note!(layer, text)
+    def apply_partial_bold_note!(layer, text, warnings: nil)
       candidates = partial_bold_phrase_candidates(text)
-      return nil if candidates.empty?
+      if candidates.empty?
+        if partial_bold_instruction?(text)
+          append_note_warning!(warnings, PARTIAL_BOLD_UNMATCHED_WARNING)
+          return :not_found
+        end
 
+        return nil
+      end
+
+      ambiguous_match = false
       candidates.each do |candidate|
-        phrase = matching_text_phrase(layer["text"], candidate)
-        next unless phrase
+        match = matching_text_phrase(layer["text"], candidate)
+        next unless match
 
-        layer["text"] = ImageProjects::InlineTextParser.bold_phrase(layer["text"], phrase)
+        if match.status == :ambiguous
+          ambiguous_match = true
+          next
+        end
+
+        layer["text"] = ImageProjects::InlineTextParser.bold_phrase(layer["text"], match.phrase)
+        append_note_warning!(warnings, match.warning) if match.warning.present?
         return :applied
       end
 
-      partial_bold_instruction?(text) ? :not_found : nil
+      if partial_bold_instruction?(text) || ambiguous_match
+        append_note_warning!(warnings, PARTIAL_BOLD_UNMATCHED_WARNING)
+        return :not_found
+      end
+
+      nil
     end
     private_class_method :apply_partial_bold_note!
 
@@ -179,8 +201,8 @@ module ImageProjects
 
       source.split(/[。；;,\n\r]+/).any? do |clause|
         clause.match?(/\A\s*#{text_phrase}\s*(?:加粗)\s*\z/i) ||
-          clause.match?(/\A\s*#{text_phrase}\s+bold\s*\z/i) ||
-          clause.match?(/\A\s*bold\s+#{text_phrase}\s*\z/i)
+          clause.match?(/\A\s*(?!all\b|the\s+text\b|text\b|make\b)#{text_phrase}\s+bold\s*\z/i) ||
+          clause.match?(/\A\s*bold\s+(?!all\b|the\s+text\b|text\b)#{text_phrase}\s*\z/i)
       end
     end
     private_class_method :partial_bold_instruction?
@@ -205,14 +227,108 @@ module ImageProjects
       return nil if plain.blank? || phrase.blank?
 
       exact_index = plain.index(phrase)
-      return plain[exact_index, phrase.length] if exact_index
+      return PartialBoldMatch.new(status: :matched, phrase: plain[exact_index, phrase.length]) if exact_index
 
       insensitive_index = plain.downcase.index(phrase.downcase)
-      return nil unless insensitive_index
+      if insensitive_index
+        return PartialBoldMatch.new(
+          status: :matched,
+          phrase: plain[insensitive_index, phrase.length]
+        )
+      end
 
-      plain[insensitive_index, phrase.length]
+      fuzzy_text_phrase(plain, phrase)
     end
     private_class_method :matching_text_phrase
+
+    def fuzzy_text_phrase(plain, candidate)
+      candidate_token = fuzzy_candidate_token(candidate)
+      return nil unless candidate_token
+
+      matches = alphanumeric_tokens(plain).select do |token|
+        fuzzy_token_match?(candidate_token.downcase, token[:text].downcase)
+      end
+
+      return nil if matches.empty?
+      return PartialBoldMatch.new(status: :ambiguous) if matches.size > 1
+
+      matched_text = matches.first[:text]
+      PartialBoldMatch.new(
+        status: :matched,
+        phrase: matched_text,
+        warning: %(Partial bold note target "#{candidate}" was matched to "#{matched_text}".)
+      )
+    end
+    private_class_method :fuzzy_text_phrase
+
+    def fuzzy_candidate_token(candidate)
+      token = candidate.to_s.strip
+      return nil unless token.match?(/\A[A-Za-z0-9]+\z/)
+      return nil if token.length < 5
+
+      letter_count = token.count("A-Za-z")
+      return nil if letter_count.to_f / token.length < 0.6
+
+      token
+    end
+    private_class_method :fuzzy_candidate_token
+
+    def alphanumeric_tokens(text)
+      text.to_s.to_enum(:scan, /[A-Za-z0-9]+/).map do
+        match = Regexp.last_match
+        { text: match[0], start: match.begin(0), end: match.end(0) }
+      end
+    end
+    private_class_method :alphanumeric_tokens
+
+    def fuzzy_token_match?(candidate, target)
+      return false if candidate == target
+
+      length_difference = (candidate.length - target.length).abs
+      return false if length_difference > maximum_fuzzy_length_difference(candidate.length, target.length)
+
+      edit_distance(candidate, target) <= maximum_fuzzy_edit_distance(candidate.length, target.length)
+    end
+    private_class_method :fuzzy_token_match?
+
+    def maximum_fuzzy_length_difference(candidate_length, target_length)
+      [ candidate_length, target_length ].max >= 8 ? 2 : 1
+    end
+    private_class_method :maximum_fuzzy_length_difference
+
+    def maximum_fuzzy_edit_distance(candidate_length, target_length)
+      [ candidate_length, target_length ].max >= 6 ? 2 : 1
+    end
+    private_class_method :maximum_fuzzy_edit_distance
+
+    def edit_distance(left, right)
+      previous = (0..right.length).to_a
+
+      left.chars.each_with_index do |left_char, left_index|
+        current = [ left_index + 1 ]
+
+        right.chars.each_with_index do |right_char, right_index|
+          cost = left_char == right_char ? 0 : 1
+          current << [
+            current[right_index] + 1,
+            previous[right_index + 1] + 1,
+            previous[right_index] + cost
+          ].min
+        end
+
+        previous = current
+      end
+
+      previous.last
+    end
+    private_class_method :edit_distance
+
+    def append_note_warning!(warnings, message)
+      return if message.blank? || warnings.nil?
+
+      warnings << message
+    end
+    private_class_method :append_note_warning!
 
     def whole_layer_bold_note?(text)
       text.to_s.include?("加粗") || text.to_s.match?(/\bbold\b/i)

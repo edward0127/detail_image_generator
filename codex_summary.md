@@ -1,38 +1,29 @@
-Implemented the double-confirmation delete flow.
+Implemented the three UI/UX changes.
 
-**Changed Files**
-- [config/routes.rb](C:/Users/edward/projects/detail_image_generator/config/routes.rb:12)
-- [image_projects_controller.rb](C:/Users/edward/projects/detail_image_generator/app/controllers/image_projects_controller.rb:27)
-- [delete_confirmation.html.erb](C:/Users/edward/projects/detail_image_generator/app/views/image_projects/delete_confirmation.html.erb:1)
-- [index.html.erb](C:/Users/edward/projects/detail_image_generator/app/views/image_projects/index.html.erb:30)
-- [show.html.erb](C:/Users/edward/projects/detail_image_generator/app/views/image_projects/show.html.erb:534)
-- [delete_confirmation_controller.js](C:/Users/edward/projects/detail_image_generator/app/javascript/controllers/delete_confirmation_controller.js:3)
-- [application.css](C:/Users/edward/projects/detail_image_generator/app/assets/stylesheets/application.css:1003)
-- [image_projects_controller_upload_test.rb](C:/Users/edward/projects/detail_image_generator/test/controllers/image_projects_controller_upload_test.rb:701)
-- [project_deletion_confirmation_test.rb](C:/Users/edward/projects/detail_image_generator/test/system/project_deletion_confirmation_test.rb:4)
+Files changed:
+- [show.html.erb](C:/Users/edward/projects/detail_image_generator/app/views/image_projects/show.html.erb:27)
+- [application.css](C:/Users/edward/projects/detail_image_generator/app/assets/stylesheets/application.css:141)
+- [image_projects_controller.rb](C:/Users/edward/projects/detail_image_generator/app/controllers/image_projects_controller.rb:829)
+- [image_projects_controller_task_selection_test.rb](C:/Users/edward/projects/detail_image_generator/test/controllers/image_projects_controller_task_selection_test.rb:47)
+- [image_projects_controller_upload_test.rb](C:/Users/edward/projects/detail_image_generator/test/controllers/image_projects_controller_upload_test.rb:239)
+- [upload_button_highlight_test.rb](C:/Users/edward/projects/detail_image_generator/test/system/upload_button_highlight_test.rb:62)
 
-**What Changed**
-- Added `GET /image_projects/:id/delete_confirmation`.
-- Index and show-page Danger Zone delete actions now open the confirmation page instead of sending `DELETE`.
-- Confirmation page shows the requested deletion summary table and warning.
-- Final delete requires typing the exact project name.
-- `DELETE /image_projects/:id` is server-side protected and rejects missing/wrong confirmation names.
-- Deletion still goes through `ImageProjects::ProjectDestroyer`.
+What changed:
+- Success `.flash.notice` messages now get a close button and auto-dismiss after 5 seconds. Alerts/errors do not auto-dismiss. Notices with action elements are left visible.
+- Project Name row button is now `Save & Preview`, submits `after_save_action=preview_current`, has no `formaction`, and stays inline with the input on desktop.
+- Background Status is now a `<details>` panel. It is collapsed when idle/completed, opens for queued/running/failed jobs, and running preview/preview-all/ZIP states show an animated spinner plus progress.
+- Failed preview jobs are now surfaced in the status panel so failed background status can actually expand visibly.
 
-**Tests Added/Updated**
-- Added system test for index Delete -> confirmation -> Cancel keeps project.
-- Updated controller tests for summary display, missing/wrong confirmation rejection, and valid confirmed deletion.
-- Existing destroyer cleanup tests still pass.
-
-**Commands Run**
-- `bundle exec rails test test/controllers/image_projects_controller_upload_test.rb` passed: 36 runs, 391 assertions.
-- `bundle exec rails test test/system/project_deletion_confirmation_test.rb` passed: 1 run, 9 assertions.
-- `bundle exec rails test test/services/image_projects/project_destroyer_test.rb` passed: 2 runs, 23 assertions.
-- `bundle exec rails test` passed: 152 runs, 1050 assertions.
+Tests run:
+- `bundle exec rails test test\controllers\image_projects_controller_task_selection_test.rb` passed.
+- `bundle exec rails test test\controllers\image_projects_controller_upload_test.rb` passed.
+- `bundle exec rails test test\system\upload_button_highlight_test.rb` passed.
+- `bundle exec rails test test\system\layer_editor_conditional_sections_test.rb` passed.
+- `bundle exec rails test test\services\image_projects\preview_generation_runner_test.rb` passed.
+- `bundle exec rails test test\services\image_projects\renderer_and_generation_test.rb` passed when run by itself.
 - `bundle exec rails zeitwerk:check` passed.
-- `Get-ChildItem -Path app\javascript -Filter *.js -Recurse | ForEach-Object { node --check $_.FullName }` passed.
-- `git diff --check` passed, with only existing CRLF normalization warnings.
+- PowerShell `app\javascript` node check exited cleanly; there were no separate JS files to check.
+- `git diff --check` passed aside from existing CRLF warnings.
 
-**Limitations**
-- Test runs emit existing VIPS warnings about optional image modules missing, but all tests passed.
-- I did not change Docker/Nginx/deployment and did not leave a Rails server running. Capybara briefly started Puma for the system test only.
+Limitation:
+- Full `bundle exec rails test` still has one order-sensitive renderer service failure: `RendererAndGenerationTest#test_batch_generation_zip_uses_P1_and_P2_target_names_with_task_formats` expected `completed` but got `completed_with_errors`. That same test passes in isolation, and the renderer service file passes by itself. The runs also emit local VIPS optional-module warnings.
