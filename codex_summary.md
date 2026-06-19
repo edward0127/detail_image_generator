@@ -1,29 +1,18 @@
-Implemented the three UI/UX changes.
+Implemented.
 
-Files changed:
-- [show.html.erb](C:/Users/edward/projects/detail_image_generator/app/views/image_projects/show.html.erb:27)
-- [application.css](C:/Users/edward/projects/detail_image_generator/app/assets/stylesheets/application.css:141)
-- [image_projects_controller.rb](C:/Users/edward/projects/detail_image_generator/app/controllers/image_projects_controller.rb:829)
-- [image_projects_controller_task_selection_test.rb](C:/Users/edward/projects/detail_image_generator/test/controllers/image_projects_controller_task_selection_test.rb:47)
-- [image_projects_controller_upload_test.rb](C:/Users/edward/projects/detail_image_generator/test/controllers/image_projects_controller_upload_test.rb:239)
-- [upload_button_highlight_test.rb](C:/Users/edward/projects/detail_image_generator/test/system/upload_button_highlight_test.rb:62)
+- Added reusable Rails `<time>` rendering in [application_helper.rb](C:/Users/edward/projects/detail_image_generator/app/helpers/application_helper.rb:4), with UTC ISO8601 `datetime`, `data-local-time`, and UTC tooltip fallback.
+- Added browser-local formatting in [application.js](C:/Users/edward/projects/detail_image_generator/app/javascript/application.js:3) using `Intl.DateTimeFormat`.
+- Applied local-time rendering to the project index, delete/clear summaries, and ZIP “Started” time, including AJAX/polling updates.
+- Refactored the ZIP status header in [show.html.erb](C:/Users/edward/projects/detail_image_generator/app/views/image_projects/show.html.erb:175) and [application.css](C:/Users/edward/projects/detail_image_generator/app/assets/stylesheets/application.css:563) so the fixed ZIP badge, wrapping title, and right-aligned progress counter do not crowd or overlap.
 
-What changed:
-- Success `.flash.notice` messages now get a close button and auto-dismiss after 5 seconds. Alerts/errors do not auto-dismiss. Notices with action elements are left visible.
-- Project Name row button is now `Save & Preview`, submits `after_save_action=preview_current`, has no `formaction`, and stays inline with the input on desktop.
-- Background Status is now a `<details>` panel. It is collapsed when idle/completed, opens for queued/running/failed jobs, and running preview/preview-all/ZIP states show an animated spinner plus progress.
-- Failed preview jobs are now surfaced in the status panel so failed background status can actually expand visibly.
+No generation logic, job behavior, cache signatures, persisted timestamps, or download behavior was changed.
 
-Tests run:
-- `bundle exec rails test test\controllers\image_projects_controller_task_selection_test.rb` passed.
-- `bundle exec rails test test\controllers\image_projects_controller_upload_test.rb` passed.
-- `bundle exec rails test test\system\upload_button_highlight_test.rb` passed.
-- `bundle exec rails test test\system\layer_editor_conditional_sections_test.rb` passed.
-- `bundle exec rails test test\services\image_projects\preview_generation_runner_test.rb` passed.
-- `bundle exec rails test test\services\image_projects\renderer_and_generation_test.rb` passed when run by itself.
-- `bundle exec rails zeitwerk:check` passed.
-- PowerShell `app\javascript` node check exited cleanly; there were no separate JS files to check.
-- `git diff --check` passed aside from existing CRLF warnings.
+Verification run:
 
-Limitation:
-- Full `bundle exec rails test` still has one order-sensitive renderer service failure: `RendererAndGenerationTest#test_batch_generation_zip_uses_P1_and_P2_target_names_with_task_formats` expected `completed` but got `completed_with_errors`. That same test passes in isolation, and the renderer service file passes by itself. The runs also emit local VIPS optional-module warnings.
+- `bundle exec rails test test\controllers\image_projects_controller_upload_test.rb` passed: 44 runs, 598 assertions
+- `bundle exec rails test test\controllers\image_projects_controller_task_selection_test.rb` passed: 41 runs, 438 assertions
+- `bundle exec rails test test\system\upload_button_highlight_test.rb` passed: 13 runs, 84 assertions
+- `node --check app\javascript\application.js` passed
+- `git diff --check` passed
+
+The Rails test runs still emit existing VIPS optional-module warnings, but all targeted tests pass.

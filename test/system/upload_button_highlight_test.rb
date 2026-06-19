@@ -88,6 +88,59 @@ class UploadButtonHighlightTest < ApplicationSystemTestCase
     assert_no_selector ".flash.notice", wait: 2
   end
 
+  test "project index formats timestamps with the browser local time formatter" do
+    project = ImageProject.create!(name: "Local Time")
+    updated_at = Time.utc(2026, 6, 19, 7, 19, 0)
+    project.update_columns(updated_at: updated_at)
+
+    visit image_projects_path
+
+    assert_selector "time[data-local-time][datetime='#{updated_at.iso8601}']"
+    assert_equal true, page.evaluate_script("Boolean(window.DetailImageGenerator && window.DetailImageGenerator.formatLocalTime)")
+
+    expected_text = page.evaluate_script("window.DetailImageGenerator.formatLocalTime(#{updated_at.iso8601.to_json})")
+    assert_equal expected_text, find("time[data-local-time][datetime='#{updated_at.iso8601}']").text
+  end
+
+  test "zip status header separates badge title and progress in sidebar" do
+    project = text_layer_project(font: "", names: [ "P1", "P2" ])
+    signature = ImageProjects::RenderInputSignature.full_zip(project)
+    project.image_generation_jobs.create!(
+      status: "running",
+      generation_scope: ImageGenerationJob::ALL_TASKS_ZIP_SCOPE,
+      input_signature: signature,
+      started_at: Time.utc(2026, 6, 19, 7, 19, 0)
+    )
+
+    visit image_project_path(project)
+
+    assert_selector ".zip-status-panel.status-running .zip-status-title-group"
+    assert_selector ".zip-status-panel.status-running .zip-status-badge", text: "ZIP"
+    assert_selector ".zip-status-panel.status-running [data-zip-status-text]", text: "Generation running"
+    assert_selector ".zip-status-panel.status-running .zip-progress", text: "0 / 2"
+
+    header_display = page.evaluate_script("getComputedStyle(document.querySelector('.zip-status-header')).display")
+    badge_width = page.evaluate_script("getComputedStyle(document.querySelector('.zip-status-badge')).width")
+    rects = page.evaluate_script(<<~JS)
+      (function() {
+        var badge = document.querySelector(".zip-status-badge").getBoundingClientRect();
+        var title = document.querySelector(".zip-status-header .status-title").getBoundingClientRect();
+        var progress = document.querySelector(".zip-progress").getBoundingClientRect();
+        return {
+          badgeRight: badge.right,
+          titleLeft: title.left,
+          titleRight: title.right,
+          progressLeft: progress.left
+        };
+      })()
+    JS
+
+    assert_equal "grid", header_display
+    assert_equal "34px", badge_width
+    assert_operator rects["badgeRight"], :<=, rects["titleLeft"]
+    assert_operator rects["titleRight"], :<=, rects["progressLeft"]
+  end
+
   test "text layer upload control opens highlights and focuses global font upload form" do
     project = text_layer_project(font: "")
 

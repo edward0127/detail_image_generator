@@ -166,6 +166,7 @@
                     end %>
                   <% status_errors = @current_zip_job.errors_list.first(5) %>
                   <% zip_status_active = @current_zip_job.active? %>
+                  <% zip_status_title = zip_status_active ? "Generation running" : @current_zip_job.status.to_s.humanize %>
                   <div class="zip-status-panel status-<%= @current_zip_job.status %>"
                        data-zip-status-panel
                        data-status="<%= @current_zip_job.status %>"
@@ -173,17 +174,17 @@
                        data-poll="<%= @current_zip_active_job.present? %>"
                        data-poll-interval="3000">
                     <div class="zip-status-header">
-                      <div>
-                        <span class="step-label">ZIP</span>
+                      <div class="zip-status-title-group">
+                        <span class="zip-status-badge" aria-hidden="true">ZIP</span>
                         <h3 class="status-title">
                           <span class="status-spinner" data-zip-status-spinner aria-hidden="true" <%= "hidden" unless zip_status_active %>></span>
-                          <span data-zip-status-text><%= @zip_busy ? "ZIP generation running" : @current_zip_job.status.to_s.humanize %></span>
+                          <span data-zip-status-text><%= zip_status_title %></span>
                         </h3>
                       </div>
                       <span class="zip-progress"><span data-zip-generated-count><%= @current_zip_generated_count %></span> / <span data-zip-total-count><%= @current_zip_total_task_count %></span></span>
                     </div>
                     <p data-zip-status-message><%= status_message %></p>
-                    <p class="muted">Started: <span data-zip-started-at><%= @current_zip_job.started_at&.strftime("%Y-%m-%d %H:%M") || "not started" %></span></p>
+                    <p class="muted">Started: <%= local_time_tag(@current_zip_job.started_at, always_time: true, data: { zip_started_at: true }) %></p>
                     <div class="zip-status-errors" data-zip-error-summary <%= "hidden" if status_errors.empty? %>>
                       <% status_errors.each do |message| %>
                         <p class="error-text"><%= message %></p>
@@ -1185,7 +1186,7 @@
     }
 
     function zipPanelStatusLabel(data) {
-      return activeZipStatus(data.status) ? "ZIP generation running" : humanizeStatus(data.status);
+      return activeZipStatus(data.status) ? "Generation running" : humanizeStatus(data.status);
     }
 
     function activeZipStatus(status) {
@@ -1317,11 +1318,11 @@
       panel.dataset.pollInterval = "3000";
       panel.innerHTML =
         '<div class="zip-status-header">' +
-          '<div><span class="step-label">ZIP</span><h3 class="status-title"><span class="status-spinner" data-zip-status-spinner aria-hidden="true" hidden></span><span data-zip-status-text></span></h3></div>' +
+          '<div class="zip-status-title-group"><span class="zip-status-badge" aria-hidden="true">ZIP</span><h3 class="status-title"><span class="status-spinner" data-zip-status-spinner aria-hidden="true" hidden></span><span data-zip-status-text></span></h3></div>' +
           '<span class="zip-progress"><span data-zip-generated-count>0</span> / <span data-zip-total-count>0</span></span>' +
         '</div>' +
         '<p data-zip-status-message></p>' +
-        '<p class="muted">Started: <span data-zip-started-at>not started</span></p>' +
+        '<p class="muted">Started: <time data-zip-started-at>not started</time></p>' +
         '<div class="zip-status-errors" data-zip-error-summary hidden></div>' +
         '<a class="button success" data-zip-download-link hidden>Download ZIP</a>';
       container.replaceChildren(panel);
@@ -1379,12 +1380,31 @@
         return "not started";
       }
 
-      var date = new Date(value);
-      if (Number.isNaN(date.getTime())) {
-        return value;
+      if (window.DetailImageGenerator && window.DetailImageGenerator.formatLocalTime) {
+        return window.DetailImageGenerator.formatLocalTime(value);
       }
 
-      return date.toLocaleString();
+      var date = new Date(value);
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+    }
+
+    function updateLocalTimeElement(element, value) {
+      if (!element) {
+        return;
+      }
+
+      if (!value) {
+        element.removeAttribute("datetime");
+        element.removeAttribute("title");
+        delete element.dataset.localTime;
+        element.textContent = "not started";
+        return;
+      }
+
+      element.setAttribute("datetime", value);
+      element.dataset.localTime = "true";
+      element.title = "UTC: " + value;
+      element.textContent = formatTimestamp(value);
     }
 
     function updateZipStatusPanel(panel, data) {
@@ -1409,9 +1429,7 @@
       if (totalCount) {
         totalCount.textContent = data.total_task_count || 0;
       }
-      if (startedAt) {
-        startedAt.textContent = formatTimestamp(data.started_at);
-      }
+      updateLocalTimeElement(startedAt, data.started_at);
 
       if (message) {
         if (activeZipStatus(data.status)) {

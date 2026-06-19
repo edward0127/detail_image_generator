@@ -89,14 +89,20 @@ class ImageProjectsControllerTaskSelectionTest < ActionDispatch::IntegrationTest
     assert_select ".zip-status-panel.status-completed"
     assert_select "details.background-status-block[open]", count: 0
     assert_select ".zip-status-panel.status-completed [data-zip-status-spinner][hidden]"
+    assert_select ".zip-status-panel.status-completed .zip-status-title-group" do
+      assert_select ".zip-status-badge", text: "ZIP"
+      assert_select ".status-title [data-zip-status-text]", text: "Completed"
+    end
+    assert_select ".zip-status-panel.status-completed .zip-progress", text: "0 / 2"
 
     running_project = create_project_with_tasks
     running_signature = ImageProjects::RenderInputSignature.full_zip(running_project)
+    running_started_at = Time.utc(2026, 6, 19, 7, 19, 0)
     running_project.image_generation_jobs.create!(
       status: "running",
       generation_scope: ImageGenerationJob::ALL_TASKS_ZIP_SCOPE,
       input_signature: running_signature,
-      started_at: Time.current
+      started_at: running_started_at
     )
 
     get image_project_path(running_project)
@@ -107,6 +113,12 @@ class ImageProjectsControllerTaskSelectionTest < ActionDispatch::IntegrationTest
     assert_select "details.background-status-block[open]"
     assert_select ".zip-status-panel.status-running [data-zip-status-spinner]"
     assert_select ".zip-status-panel.status-running [data-zip-status-spinner][hidden]", count: 0
+    assert_select ".zip-status-panel.status-running .zip-status-title-group" do
+      assert_select ".zip-status-badge", text: "ZIP"
+      assert_select ".status-title [data-zip-status-text]", text: "Generation running"
+    end
+    assert_select ".zip-status-panel.status-running .zip-progress", text: "0 / 2"
+    assert_select ".zip-status-panel.status-running time[data-zip-started-at][data-local-time='true'][datetime='#{running_started_at.iso8601}'][title='UTC: #{running_started_at.iso8601}']", text: "19 Jun 07:19 UTC"
     assert_includes response.body, "This may take a while for many images."
 
     failed_project = create_project_with_tasks
@@ -124,6 +136,10 @@ class ImageProjectsControllerTaskSelectionTest < ActionDispatch::IntegrationTest
     get image_project_path(failed_project)
     assert_response :success
     assert_select ".zip-status-panel.status-failed"
+    assert_select ".zip-status-panel.status-failed .zip-status-title-group" do
+      assert_select ".zip-status-badge", text: "ZIP"
+      assert_select ".status-title [data-zip-status-text]", text: "Failed"
+    end
     assert_select "details.background-status-block[open]"
     assert_includes response.body, "render failed"
   end
@@ -933,6 +949,9 @@ class ImageProjectsControllerTaskSelectionTest < ActionDispatch::IntegrationTest
       generation_scope: ImageGenerationJob::ALL_TASKS_ZIP_SCOPE,
       bytes: "zip-bytes"
     )
+    started_at = Time.utc(2026, 6, 19, 7, 19, 0)
+    finished_at = Time.utc(2026, 6, 19, 7, 21, 0)
+    job.update_columns(started_at: started_at, finished_at: finished_at, updated_at: finished_at)
 
     get generation_job_status_image_project_path(project, job_id: job.id)
 
@@ -943,6 +962,10 @@ class ImageProjectsControllerTaskSelectionTest < ActionDispatch::IntegrationTest
     assert_equal true, payload["input_signature_matches"]
     assert_equal true, payload["downloadable"]
     assert_equal generation_job_download_image_project_path(project, job_id: job.id), payload["download_url"]
+    assert_equal started_at.iso8601, payload["started_at"]
+    assert_equal finished_at.iso8601, payload["finished_at"]
+    assert_equal finished_at.iso8601, payload["updated_at"]
+    assert_equal started_at.iso8601, job.reload.started_at.utc.iso8601
   end
 
   test "generation job download redirects only when zip is ready" do
@@ -1132,13 +1155,13 @@ class ImageProjectsControllerTaskSelectionTest < ActionDispatch::IntegrationTest
     asset
   end
 
-  def attach_zip_job(project, input_signature:, generation_scope:, bytes:)
+  def attach_zip_job(project, input_signature:, generation_scope:, bytes:, started_at: Time.current, finished_at: Time.current)
     job = project.image_generation_jobs.create!(
       status: "completed",
       generation_scope: generation_scope,
       input_signature: input_signature,
-      started_at: Time.current,
-      finished_at: Time.current
+      started_at: started_at,
+      finished_at: finished_at
     )
     job.zip_file.attach(io: StringIO.new(bytes), filename: "generated.zip", content_type: "application/zip")
     job

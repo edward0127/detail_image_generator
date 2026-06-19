@@ -70,7 +70,7 @@
         </tr>
         <tr>
           <th scope="row">Last updated time</th>
-          <td><%= l(@clear_summary[:last_updated_at], format: :short) %></td>
+          <td><%= local_time_tag(@clear_summary[:last_updated_at]) %></td>
         </tr>
       </tbody>
     </table>

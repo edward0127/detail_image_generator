@@ -886,12 +886,16 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
 
   test "project index shows delete action" do
     project = create_project
+    updated_at = Time.utc(2026, 6, 19, 7, 19, 0)
+    project.update_columns(updated_at: updated_at)
 
     get image_projects_path
 
     assert_response :success
     assert_includes response.body, project.name
     assert_select "a[href='#{delete_confirmation_image_project_path(project, return_to: image_projects_path)}']", text: "Delete"
+    assert_select "time[data-local-time='true'][datetime='#{updated_at.iso8601}'][title='UTC: #{updated_at.iso8601}']", text: "19 Jun 07:19 UTC"
+    assert_equal updated_at.iso8601, project.reload.updated_at.utc.iso8601
   end
 
   test "delete confirmation page displays project summary" do
@@ -915,7 +919,8 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
       assert_select "th", text: "Generated jobs / ZIP files count"
       assert_select "td", text: "2 jobs / 1 ZIP file"
       assert_select "th", text: "Last updated time"
-      assert_select "td", text: I18n.l(project.updated_at, format: :short)
+      updated_at = project.updated_at.utc
+      assert_select "td time[data-local-time='true'][datetime='#{updated_at.iso8601}'][title='UTC: #{updated_at.iso8601}']", text: updated_at.strftime(ApplicationHelper::LOCAL_TIME_FALLBACK_FORMAT)
     end
     assert_select "input[name='confirm_project_name']"
     assert_select "input[type='submit'][value='Yes, delete this project']"
@@ -942,6 +947,9 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
       assert_select "th", text: "ZIP attachments count"
       assert_select "td", text: "1"
       assert_select "th", text: "Global Font Library assets kept"
+      updated_at = project.updated_at.utc
+      assert_select "th", text: "Last updated time"
+      assert_select "td time[data-local-time='true'][datetime='#{updated_at.iso8601}'][title='UTC: #{updated_at.iso8601}']", text: updated_at.strftime(ApplicationHelper::LOCAL_TIME_FALLBACK_FORMAT)
     end
     assert_select "input[name='confirm_clear']"
     assert_select "input[type='submit'][value='Clear project data']"
