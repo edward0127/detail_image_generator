@@ -27,7 +27,10 @@
               <td><%= project.tasks.size %></td>
               <td><%= local_time_tag(project.updated_at) %></td>
               <td class="table-actions">
-                <%= link_to "Delete", delete_confirmation_image_project_path(project, return_to: image_projects_path), class: "button tiny danger" %>
+                <div class="project-actions">
+                  <%= link_to "View", image_project_path(project), class: "button tiny" %>
+                  <%= link_to "Delete", delete_confirmation_image_project_path(project, return_to: image_projects_path), class: "button tiny danger" %>
+                </div>
               </td>
             </tr>
           <% end %>

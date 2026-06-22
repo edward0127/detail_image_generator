@@ -1,18 +1,17 @@
 Implemented.
 
-- Added reusable Rails `<time>` rendering in [application_helper.rb](C:/Users/edward/projects/detail_image_generator/app/helpers/application_helper.rb:4), with UTC ISO8601 `datetime`, `data-local-time`, and UTC tooltip fallback.
-- Added browser-local formatting in [application.js](C:/Users/edward/projects/detail_image_generator/app/javascript/application.js:3) using `Intl.DateTimeFormat`.
-- Applied local-time rendering to the project index, delete/clear summaries, and ZIP “Started” time, including AJAX/polling updates.
-- Refactored the ZIP status header in [show.html.erb](C:/Users/edward/projects/detail_image_generator/app/views/image_projects/show.html.erb:175) and [application.css](C:/Users/edward/projects/detail_image_generator/app/assets/stylesheets/application.css:563) so the fixed ZIP badge, wrapping title, and right-aligned progress counter do not crowd or overlap.
+Changed [index.html.erb](C:/Users/edward/projects/detail_image_generator/app/views/image_projects/index.html.erb:30) to wrap `View` and `Delete` in `.project-actions`, and updated [application.css](C:/Users/edward/projects/detail_image_generator/app/assets/stylesheets/application.css:1465) so the Actions cell:
 
-No generation logic, job behavior, cache signatures, persisted timestamps, or download behavior was changed.
+- keeps the buttons on one line with `flex-wrap: nowrap`
+- right-aligns them with `justify-content: flex-end`
+- keeps an `8px` gap
+- reserves enough cell width and prevents button shrink/cramping
 
-Verification run:
+I also updated the existing controller test at [image_projects_controller_upload_test.rb](C:/Users/edward/projects/detail_image_generator/test/controllers/image_projects_controller_upload_test.rb:907) to assert the wrapper and action order.
 
-- `bundle exec rails test test\controllers\image_projects_controller_upload_test.rb` passed: 44 runs, 598 assertions
-- `bundle exec rails test test\controllers\image_projects_controller_task_selection_test.rb` passed: 41 runs, 438 assertions
-- `bundle exec rails test test\system\upload_button_highlight_test.rb` passed: 13 runs, 84 assertions
-- `node --check app\javascript\application.js` passed
-- `git diff --check` passed
+Validation:
+- `ruby bin\rails test test\controllers\image_projects_controller_upload_test.rb` passed: `44 runs, 617 assertions, 0 failures`
+- Existing local server at `http://127.0.0.1:3000/image_projects` returns `200` and includes the new `project-actions` wrapper
+- Delete link destination/classes were preserved; delete confirmation flow was not changed
 
-The Rails test runs still emit existing VIPS optional-module warnings, but all targeted tests pass.
+Note: `codex_summary.md` is already modified in the working tree; I did not edit it.

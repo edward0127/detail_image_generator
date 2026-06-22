@@ -884,8 +884,9 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
     assert_equal "**DESIGN** HIGHLIGHTS", project.reload.config_hash.dig("tasks", 0, "layers", 0, "text")
   end
 
-  test "project index shows delete action" do
+  test "project index shows view and delete actions" do
     project = create_project
+    second_project = ImageProject.create!(name: "Catalog Detail Images")
     updated_at = Time.utc(2026, 6, 19, 7, 19, 0)
     project.update_columns(updated_at: updated_at)
 
@@ -893,7 +894,24 @@ class ImageProjectsControllerUploadTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_includes response.body, project.name
+    assert_select "td.table-actions a", text: "View", count: 2
+    assert_select "a[href='#{image_project_path(project)}']", text: "View"
+    assert_select "a[href='#{image_project_path(second_project)}']", text: "View"
     assert_select "a[href='#{delete_confirmation_image_project_path(project, return_to: image_projects_path)}']", text: "Delete"
+    assert_select "a[href='#{delete_confirmation_image_project_path(second_project, return_to: image_projects_path)}']", text: "Delete"
+    css_select("tbody tr").each do |row|
+      name = row.at_css("td:first-child a").text
+      row_project = [ project, second_project ].find { |candidate| candidate.name == name }
+      next unless row_project
+
+      assert_equal 1, row.css("td.table-actions .project-actions").size
+      actions = row.css("td.table-actions .project-actions a")
+      assert_equal [ "View", "Delete" ], actions.map(&:text)
+      assert_equal image_project_path(row_project), actions.first["href"]
+      assert_equal delete_confirmation_image_project_path(row_project, return_to: image_projects_path), actions[1]["href"]
+      assert_equal "button tiny", actions.first["class"]
+      assert_equal "button tiny danger", actions[1]["class"]
+    end
     assert_select "time[data-local-time='true'][datetime='#{updated_at.iso8601}'][title='UTC: #{updated_at.iso8601}']", text: "19 Jun 07:19 UTC"
     assert_equal updated_at.iso8601, project.reload.updated_at.utc.iso8601
   end

@@ -1463,8 +1463,21 @@ input[type="submit"]:disabled {
 }
 
 .table-actions {
+  min-width: 116px;
   width: 1%;
   white-space: nowrap;
+}
+
+.project-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+
+.project-actions .button {
+  flex: 0 0 auto;
 }
 
 .empty-state {
